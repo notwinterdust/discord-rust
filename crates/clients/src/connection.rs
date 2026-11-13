@@ -466,6 +466,23 @@ impl<T: GatewayTransport> GatewayConnection<T> {
     /// Returns an error when connecting or reconnecting fails, or when a
     /// received frame cannot be handled.
     pub fn run(&mut self) -> Result<(), GatewayConnectionError> {
+        self.run_until(|| false)
+    }
+
+    /// Blocks until the gateway closes permanently or `stop` returns `true`.
+    ///
+    /// This is [`GatewayConnection::run`] with a cooperative shutdown check
+    /// performed before every poll and reconnect attempt. When `stop` returns
+    /// `true`, the transport is closed and the connection is marked closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when connecting or reconnecting fails, or when a
+    /// received frame cannot be handled.
+    pub fn run_until<F>(&mut self, mut stop: F) -> Result<(), GatewayConnectionError>
+    where
+        F: FnMut() -> bool,
+    {
         if self.closed || self.runtime.state() == GatewayState::Closed {
             self.closed = true;
             return Ok(());
@@ -479,6 +496,13 @@ impl<T: GatewayTransport> GatewayConnection<T> {
 
         loop {
             if self.closed {
+                return Ok(());
+            }
+            if stop() {
+                self.transport.close();
+                self.closed = true;
+                self.needs_reconnect = false;
+                self.next_heartbeat = None;
                 return Ok(());
             }
             if self.needs_reconnect {
@@ -860,6 +884,26 @@ mod tests {
                 .is_none()
         );
         assert!(connection.poll().unwrap().is_none());
+    }
+
+    #[test]
+    fn run_until_stops_and_closes_the_transport() {
+        let mut transport = MockTransport::default();
+        transport.frames.push_back(GatewayFrame::Text(hello(1_000)));
+
+        let mut connection = GatewayConnection::new(config(), transport);
+        let mut checks = 0;
+        connection
+            .run_until(|| {
+                checks += 1;
+                checks > 1
+            })
+            .unwrap();
+
+        assert!(connection.is_closed());
+        assert_eq!(connection.transport().closes, 1);
+        assert!(!connection.needs_reconnect());
+        assert!(connection.next_heartbeat().is_none());
     }
 
     #[test]

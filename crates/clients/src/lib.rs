@@ -21,7 +21,7 @@ pub mod http;
 pub mod shard;
 
 pub use api::DiscordApi;
-pub use bot::{Bot, BotBuilder, EventWaiter, Hooks};
+pub use bot::{Bot, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult};
 pub use cache::{Cache, CacheConfig, ClientCache, MemberCache, MessageEditTracker};
 pub use client::{
     Client, ClientState, HttpClient, PendingResponse, RetryPolicy, SecureTransport, TcpTransport,

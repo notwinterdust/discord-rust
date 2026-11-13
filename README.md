@@ -49,19 +49,19 @@ For the complete 5-minute interactive tutorial and guide, see the **[Step-by-Ste
 Here is a quick overview of setting up and running a bot with `BotBuilder`:
 
 ```rust,no_run
-use discord_rust::{BotBuilder, Event, Intents};
+use discord_rust::{BotBuilder, Event, GatewayTransport, Intents};
 
-fn main() {
-    let mut bot = BotBuilder::new()
+fn run<T: GatewayTransport>(transport: T) {
+    let bot = BotBuilder::new()
         .token("YOUR_BOT_TOKEN")
-        .intents(Intents::default_intents() | Intents::MESSAGE_CONTENT)
+        .intents_flags(Intents::default_intents() | Intents::MESSAGE_CONTENT)
         .on_event(|event| {
             match event {
                 Event::MessageCreate(msg) => {
                     println!("Received message: {}", msg.content);
                 }
                 Event::Ready(ready) => {
-                    println!("Connected as {}", ready.user.username);
+                    println!("Connected as {}", ready.user.user.name);
                 }
                 _ => {}
             }
@@ -69,11 +69,11 @@ fn main() {
         .build()
         .expect("Failed to build bot");
 
-    // Start background shard workers and wait
-    let handles = bot.start_shards();
-    for handle in handles {
-        let _ = handle.join();
-    }
+    bot.run(transport).expect("gateway error");
+}
+
+fn main() {
+    // Pass your WebSocket + TLS transport implementation to `run`.
 }
 ```
 

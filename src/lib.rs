@@ -42,10 +42,10 @@ pub use webhook;
 
 // Re-export key high-level types at the crate root for ergonomics
 pub use app::ui::Paginator;
-pub use clients::bot::{Bot, BotBuilder, EventWaiter, Hooks};
+pub use clients::bot::{Bot, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult};
 pub use clients::cache::{ClientCache, MessageEditTracker};
 pub use clients::client::HttpClient;
-pub use clients::connection::GatewayConnection;
+pub use clients::connection::{GatewayConnection, GatewayTransport};
 pub use clients::events::{PooledEventDispatcher, ThreadedEventDispatcher};
 pub use clients::shard::{ConcurrentShardRuntime, ShardManager};
 pub use commands::command;
