@@ -45,9 +45,15 @@ pub use app::ui::Paginator;
 pub use clients::bot::{Bot, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult};
 pub use clients::cache::{ClientCache, MessageEditTracker};
 pub use clients::client::HttpClient;
-pub use clients::connection::{GatewayConnection, GatewayTransport};
+pub use clients::connection::{
+    GatewayConnection, GatewayTransport, WebSocketFrame, WebSocketTransport,
+};
 pub use clients::events::{PooledEventDispatcher, ThreadedEventDispatcher};
 pub use clients::shard::{ConcurrentShardRuntime, ShardManager};
+pub use clients::websocket::{
+    TcpConnector, WebSocketClient, WebSocketConnector, WebSocketGateway, WebSocketIo,
+    WebSocketStream,
+};
 pub use commands::command;
 pub use commands::{
     CommandDefinition, CommandError, CommandGroup, CommandRegistry, Context, Responder,

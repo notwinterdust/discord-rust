@@ -4,6 +4,8 @@
 //! a REST client builds on, plus a transport-independent gateway state machine
 //! covering identify, resume, heartbeat and reconnect decisions. Typed gateway
 //! events are decoded and routed to handlers by [`GatewayRuntime`].
+//! [`websocket`] contains a standard-library WebSocket handshake and framing
+//! layer for hosts that supply the underlying byte stream.
 //! Socket implementations, sharding and the async runtime will follow in later
 //! milestones.
 
@@ -19,6 +21,7 @@ pub mod gateway;
 pub mod health;
 pub mod http;
 pub mod shard;
+pub mod websocket;
 
 pub use api::DiscordApi;
 pub use bot::{Bot, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult};
@@ -43,3 +46,7 @@ pub use health::HealthReport;
 pub use http::{HttpMethod, HttpRequest, HttpResponse, RateLimit, RateLimitScope};
 pub use shard::{ConcurrentShardRuntime, Shard, ShardHandle, ShardManager};
 pub use util::{ThreadPool, ThreadPoolBuilder};
+pub use websocket::{
+    TcpConnector, WebSocketClient, WebSocketConnector, WebSocketGateway, WebSocketIo,
+    WebSocketStream,
+};

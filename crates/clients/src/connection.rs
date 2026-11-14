@@ -5,6 +5,9 @@
 //! transport performs the actual I/O: an implementation owns the socket, the
 //! WebSocket framing and any TLS layer, and exchanges JSON text frames and
 //! close codes with this loop.
+//!
+//! [`crate::websocket`] provides a standard-library RFC 6455 implementation for
+//! hosts that supply a `Read + Write` byte stream.
 
 use std::error::Error;
 use std::fmt;
@@ -88,13 +91,57 @@ pub enum WebSocketFrame {
 /// A WebSocket implementation supplied by the host application.
 pub trait WebSocketTransport {
     /// Opens a WebSocket connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatewayTransportError`] when the handshake or connection fails.
     fn open(&mut self, url: &str) -> Result<(), GatewayTransportError>;
-    /// Receives one frame.
-    fn receive(&mut self) -> Result<WebSocketFrame, GatewayTransportError>;
-    /// Sends one frame.
+
+    /// Receives one WebSocket frame.
+    ///
+    /// Returns `Ok(None)` when `timeout` elapsed before a frame began. An
+    /// implementation that cannot bound blocking reads may ignore the timeout
+    /// and always block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatewayTransportError`] when the connection fails or a frame
+    /// is malformed.
+    fn receive(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<Option<WebSocketFrame>, GatewayTransportError>;
+
+    /// Sends one WebSocket frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatewayTransportError`] when the frame cannot be sent.
     fn send_frame(&mut self, frame: WebSocketFrame) -> Result<(), GatewayTransportError>;
+
     /// Closes the connection.
     fn close(&mut self);
+}
+
+impl<T: WebSocketTransport + ?Sized> WebSocketTransport for Box<T> {
+    fn open(&mut self, url: &str) -> Result<(), GatewayTransportError> {
+        (**self).open(url)
+    }
+
+    fn receive(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<Option<WebSocketFrame>, GatewayTransportError> {
+        (**self).receive(timeout)
+    }
+
+    fn send_frame(&mut self, frame: WebSocketFrame) -> Result<(), GatewayTransportError> {
+        (**self).send_frame(frame)
+    }
+
+    fn close(&mut self) {
+        (**self).close();
+    }
 }
 
 /// Performs gateway I/O for [`GatewayConnection`].
