@@ -11,8 +11,9 @@ A feature-rich, high-performance Discord API and Gateway library for Rust.
 ## Features
 
 - **Full Gateway Lifecycle**: Connect, Hello, Identify, Resume, Heartbeat, and automatic reconnection.
+- **Standard-Library WebSocket**: RFC 6455 handshake and framing over any host-provided byte stream, with a reconnectable client and gateway adapter. TLS remains host-supplied.
 - **Multi-Shard Architecture**: `ShardManager` with automatic shard counting and `ConcurrentShardRuntime`.
-- **LRU In-Memory Cache & Edit Tracking**: Thread-safe `ClientCache` and `MessageEditTracker` with automatic event invalidation.
+- **LRU In-Memory Cache & Edit Tracking**: Thread-safe `ClientCache` with resource lookup helpers, webhook tracking, and automatic event invalidation.
 - **Bounded Worker Thread Pool**: Dedicated `ThreadPool` with `PooledEventDispatcher` for concurrent event fan-out across CPU cores.
 - **Application Commands & Proc Macros**: Slash commands, typed options, subcommands, and `#[command]` attribute macro for prefix commands.
 - **UI Components & Paginator**: Buttons, select menus, modals, and interactive multi-page `Paginator`.
@@ -127,6 +128,40 @@ fn main() {}
 `permissions`, and helpers such as `respond`, `reply`, `respond_embed`,
 `typing`, and `has_permissions`. Use `BotBuilder::responder` to supply a custom
 `Responder` instead of a REST client.
+
+---
+
+## Message Helpers
+
+`AllowedMentions` controls which mentions a message may trigger. Explicit user
+and role mentions are separate from parsing mentions written in the content:
+
+```rust,no_run
+use discord_rust::models::{AllowedMentions, Embed};
+
+fn send<T: discord_rust::clients::Transport>(
+    api: &discord_rust::clients::DiscordApi<T>,
+) -> Result<(), discord_rust::except::HttpError> {
+    let mentions = AllowedMentions::none()
+        .add_user(42_u64)
+        .with_replied_user(true);
+
+    api.send_message_with_mentions(123, "hello", &mentions)?;
+    api.send_reply_with_mentions(123, 456, "hi", &mentions)?;
+
+    let embed = Embed::new()
+        .with_title("Status")
+        .with_description("All systems operational");
+    api.send_embed_model(123, &embed)?;
+    Ok(())
+}
+```
+
+`ClientCache` resolves cached resources with `guild`, `channel`, `user`, `role`,
+`message`, `webhook`, `guild_channel`, `guild_member`, `channel_by_name`, and
+`member_by_name`. Webhooks received from the REST API can be stored with
+`cache_webhook` / `cache_webhooks` and are invalidated automatically on
+`WEBHOOKS_UPDATE`.
 
 ---
 
