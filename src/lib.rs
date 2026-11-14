@@ -49,6 +49,9 @@ pub use clients::connection::{GatewayConnection, GatewayTransport};
 pub use clients::events::{PooledEventDispatcher, ThreadedEventDispatcher};
 pub use clients::shard::{ConcurrentShardRuntime, ShardManager};
 pub use commands::command;
+pub use commands::{
+    CommandDefinition, CommandError, CommandGroup, CommandRegistry, Context, Responder,
+};
 pub use enums::Intents;
 pub use models::Event;
 pub use util::ThreadPool;

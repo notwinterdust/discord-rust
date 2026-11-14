@@ -81,6 +81,55 @@ Learn more in the **[BotBuilder & Lifecycle Guide](https://discord-rust.netlify.
 
 ---
 
+## Quickstart: Prefix Commands
+
+`CommandRegistry` plugs into `BotBuilder`. Matching `MessageCreate` commands run
+before event handlers, bot authors are ignored, and handlers receive message
+metadata plus a responder for replies:
+
+```rust,no_run
+use discord_rust::{BotBuilder, CommandRegistry, Context, Intents};
+
+fn run<T, A>(transport: T, api: discord_rust::clients::DiscordApi<A>)
+where
+    T: discord_rust::GatewayTransport,
+    A: discord_rust::clients::Transport + Send + Sync + 'static,
+{
+    let mut registry = CommandRegistry::new("!");
+    registry
+        .add("ping", Vec::<String>::new(), |context: &Context| {
+            context.reply("pong")
+        })
+        .unwrap();
+    registry.add_check(|context: &Context| {
+        if context.author_is_bot {
+            Err("bots cannot invoke commands".into())
+        } else {
+            Ok(())
+        }
+    });
+
+    let bot = BotBuilder::new()
+        .token("YOUR_BOT_TOKEN")
+        .intents_flags(Intents::default_intents() | Intents::MESSAGE_CONTENT)
+        .commands(registry)
+        .api(api)
+        .build()
+        .expect("Failed to build bot");
+
+    bot.run(transport).expect("gateway error");
+}
+
+fn main() {}
+```
+
+`Context` exposes `guild_id`, `channel_id`, `user_id`, `message_id`,
+`permissions`, and helpers such as `respond`, `reply`, `respond_embed`,
+`typing`, and `has_permissions`. Use `BotBuilder::responder` to supply a custom
+`Responder` instead of a REST client.
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

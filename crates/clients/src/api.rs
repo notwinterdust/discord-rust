@@ -8,7 +8,7 @@
 use except::HttpError;
 
 use crate::{HttpClient, HttpResponse, Transport};
-use data::Value;
+use data::{Object, Value};
 
 /// REST operations for core Discord resources.
 #[derive(Clone, Debug)]
@@ -262,6 +262,53 @@ impl<T: Transport> DiscordApi<T> {
                 .post(format!("channels/{channel_id}/messages"))
                 .with_body(body),
         )
+    }
+
+    /// Sends a plain-text message to a channel.
+    pub fn send_message(&self, channel_id: u64, content: &str) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a plain-text reply to an existing message.
+    pub fn send_reply(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+        content: &str,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut reference = Object::new();
+        reference.insert("message_id", Value::from(message_id.to_string()));
+        reference.insert("fail_if_not_exists", Value::from(false));
+
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("message_reference", Value::from(reference));
+
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends an embed to a channel.
+    pub fn send_embed(&self, channel_id: u64, embed: &Value) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("embeds", Value::from(vec![embed.clone()]));
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Shows the typing indicator in a channel.
+    pub fn trigger_typing(&self, channel_id: u64) -> Result<HttpResponse, HttpError> {
+        self.client
+            .execute_post(format!("channels/{channel_id}/typing"))
     }
 
     /// Edits a message.
@@ -1201,5 +1248,32 @@ mod tests {
         assert_eq!(reqs[9].method, HttpMethod::Delete);
         assert_eq!(reqs[22].path, "channels/456/polls/789/expire");
         assert_eq!(reqs[22].method, HttpMethod::Post);
+    }
+
+    #[test]
+    fn api_builds_command_response_requests() {
+        let (api, transport) = make_api();
+
+        api.send_message(456, "hello").unwrap();
+        api.send_reply(456, 789, "hi").unwrap();
+        api.send_embed(456, &data::Value::object()).unwrap();
+        api.trigger_typing(456).unwrap();
+
+        let reqs = transport.requests.borrow();
+        assert_eq!(reqs.len(), 4);
+        assert_eq!(reqs[0].path, "channels/456/messages");
+        assert_eq!(reqs[0].method, HttpMethod::Post);
+        assert_eq!(reqs[1].path, "channels/456/messages");
+        assert_eq!(reqs[1].method, HttpMethod::Post);
+        assert_eq!(reqs[2].path, "channels/456/messages");
+        assert_eq!(reqs[2].method, HttpMethod::Post);
+        assert_eq!(reqs[3].path, "channels/456/typing");
+        assert_eq!(reqs[3].method, HttpMethod::Post);
+
+        let body =
+            |index: usize| String::from_utf8(reqs[index].body.clone().expect("json body")).unwrap();
+        assert!(body(0).contains("\"content\":\"hello\""));
+        assert!(body(1).contains("message_reference"));
+        assert!(body(2).contains("embeds"));
     }
 }

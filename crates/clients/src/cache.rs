@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use enums::Permissions;
+
 /// A simple bounded cache keyed by Discord IDs.
 #[derive(Clone, Debug)]
 pub struct Cache<T> {
@@ -40,6 +42,11 @@ impl<T> Cache<T> {
     #[must_use]
     pub fn get(&self, id: u64) -> Option<&T> {
         self.values.get(&id)
+    }
+
+    /// Returns a mutable reference to a cached value.
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut T> {
+        self.values.get_mut(&id)
     }
 
     /// Removes a cached value.
@@ -355,10 +362,25 @@ impl ClientCache {
             // ---- Roles -------------------------------------------------
             models::Event::GuildRoleCreate(ev) | models::Event::GuildRoleUpdate(ev) => {
                 self.roles.insert(ev.role.id.get(), ev.role.clone());
+                if let Some(guild) = self.guilds.get_mut(ev.guild_id.get()) {
+                    if let Some(existing) =
+                        guild.roles.iter_mut().find(|role| role.id == ev.role.id)
+                    {
+                        *existing = ev.role.clone();
+                    } else {
+                        guild.roles.push(ev.role.clone());
+                        guild
+                            .roles
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    }
+                }
                 true
             }
             models::Event::GuildRoleDelete(ev) => {
                 self.roles.remove(ev.role_id.get());
+                if let Some(guild) = self.guilds.get_mut(ev.guild_id.get()) {
+                    guild.roles.retain(|role| role.id != ev.role_id);
+                }
                 true
             }
 
@@ -453,6 +475,28 @@ impl ClientCache {
                 .filter_map(|rid| self.roles.get(rid.get()))
                 .collect(),
         )
+    }
+
+    /// Resolves the permissions a member has in a guild channel.
+    ///
+    /// Returns `None` when the guild, channel, or member is not cached. The
+    /// guild owner and administrators receive every permission.
+    #[must_use]
+    pub fn permissions_for(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        channel_id: u64,
+    ) -> Option<Permissions> {
+        let guild = self.guilds.get(guild_id)?;
+        let channel = self.channels.get(channel_id)?;
+        let member = self.member(guild_id, user_id).or_else(|| {
+            guild
+                .members()
+                .iter()
+                .find(|member| member.user.id.get() == user_id)
+        })?;
+        Some(channel.permissions_for(guild, member))
     }
 
     /// Returns the presence for a user, if cached.
@@ -718,5 +762,52 @@ mod tests {
         let (mutated, _) = cache.update_tracked(&del_ev);
         assert!(mutated);
         assert_eq!(cache.edit_tracker.get_response(123), None);
+    }
+
+    #[test]
+    fn permissions_for_resolves_member_roles() {
+        let guild_id = 10_u64;
+        let user_id = 42_u64;
+        let channel_id = 7_u64;
+
+        let everyone = models::Role::new(guild_id, guild_id, "@everyone")
+            .with_permissions(Permissions::VIEW_CHANNEL);
+        let member_role = models::Role::new(guild_id, 20_u64, "member")
+            .with_permissions(Permissions::SEND_MESSAGES);
+
+        let user = models::User {
+            id: user_id.into(),
+            ..models::User::default()
+        };
+        let member = models::Member::new(user, guild_id).with_roles(vec![member_role.clone()]);
+        let channel =
+            models::GuildChannel::new(channel_id, guild_id, "general", enums::ChannelType::Text);
+
+        let mut guild = models::Guild::new(guild_id, "Guild");
+        guild.roles = vec![everyone, member_role.clone()];
+        guild.members = vec![member];
+        guild.channels = vec![channel];
+
+        let mut cache = make_cache();
+        assert!(cache.update(&models::Event::GuildCreate(guild)));
+
+        let permissions = cache
+            .permissions_for(guild_id, user_id, channel_id)
+            .expect("cached guild, channel and member");
+        assert!(permissions.contains(Permissions::VIEW_CHANNEL));
+        assert!(permissions.contains(Permissions::SEND_MESSAGES));
+        assert!(cache.permissions_for(guild_id, 99, channel_id).is_none());
+
+        let updated_role = member_role.with_permissions(Permissions::ADMINISTRATOR);
+        assert!(
+            cache.update(&models::Event::GuildRoleUpdate(models::RoleEvent {
+                guild_id: guild_id.into(),
+                role: updated_role,
+            }))
+        );
+        let permissions = cache
+            .permissions_for(guild_id, user_id, channel_id)
+            .expect("updated permissions");
+        assert!(permissions.contains(Permissions::ADMINISTRATOR));
     }
 }

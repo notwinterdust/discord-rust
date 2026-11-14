@@ -12,10 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use commands::{CommandError, CommandRegistry, Responder};
+use data::Value;
 use enums::Intents;
 use models::Event;
 
+use crate::api::DiscordApi;
 use crate::cache::{CacheConfig, ClientCache};
+use crate::client::Transport;
 use crate::connection::{
     GatewayConnection, GatewayConnectionError, GatewayTransport, GatewayTransportError,
 };
@@ -92,6 +96,55 @@ impl std::fmt::Debug for BotHandler {
     }
 }
 
+#[derive(Clone)]
+struct ResponderHandle(Arc<dyn Responder>);
+
+impl std::fmt::Debug for ResponderHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResponderHandle")
+    }
+}
+
+struct ApiResponder<T> {
+    api: DiscordApi<T>,
+}
+
+impl<T> ApiResponder<T> {
+    const fn new(api: DiscordApi<T>) -> Self {
+        Self { api }
+    }
+}
+
+impl<T: Transport + Send + Sync + 'static> Responder for ApiResponder<T> {
+    fn send(&self, channel_id: u64, content: &str) -> Result<(), CommandError> {
+        self.api
+            .send_message(channel_id, content)
+            .map(|_| ())
+            .map_err(|error| CommandError::new(error.to_string()))
+    }
+
+    fn reply(&self, channel_id: u64, message_id: u64, content: &str) -> Result<(), CommandError> {
+        self.api
+            .send_reply(channel_id, message_id, content)
+            .map(|_| ())
+            .map_err(|error| CommandError::new(error.to_string()))
+    }
+
+    fn send_embed(&self, channel_id: u64, embed: &Value) -> Result<(), CommandError> {
+        self.api
+            .send_embed(channel_id, embed)
+            .map(|_| ())
+            .map_err(|error| CommandError::new(error.to_string()))
+    }
+
+    fn typing(&self, channel_id: u64) -> Result<(), CommandError> {
+        self.api
+            .trigger_typing(channel_id)
+            .map(|_| ())
+            .map_err(|error| CommandError::new(error.to_string()))
+    }
+}
+
 /// An ergonomic bot configuration built with the builder pattern.
 ///
 /// # Example
@@ -114,6 +167,8 @@ pub struct Bot {
     pub hooks: Hooks,
     handlers: Vec<BotHandler>,
     cache: Arc<Mutex<ClientCache>>,
+    commands: Option<Arc<Mutex<CommandRegistry>>>,
+    responder: Option<ResponderHandle>,
 }
 
 /// Builder for [`Bot`].
@@ -124,6 +179,8 @@ pub struct BotBuilder {
     hooks: Hooks,
     handlers: Vec<BotHandler>,
     cache_config: CacheConfig,
+    commands: Option<Arc<Mutex<CommandRegistry>>>,
+    responder: Option<ResponderHandle>,
 }
 
 impl BotBuilder {
@@ -229,6 +286,34 @@ impl BotBuilder {
         self
     }
 
+    /// Registers a command registry.
+    ///
+    /// The bot parses `MessageCreate` events with the registry's prefix and
+    /// dispatches matching commands before user event handlers run. Bot
+    /// authors are ignored.
+    #[must_use]
+    pub fn commands(mut self, registry: CommandRegistry) -> Self {
+        self.commands = Some(Arc::new(Mutex::new(registry)));
+        self
+    }
+
+    /// Sets a custom command responder.
+    #[must_use]
+    pub fn responder(mut self, responder: Arc<dyn Responder>) -> Self {
+        self.responder = Some(ResponderHandle(responder));
+        self
+    }
+
+    /// Uses a [`DiscordApi`] REST client for command responses.
+    #[must_use]
+    pub fn api<T>(mut self, api: DiscordApi<T>) -> Self
+    where
+        T: Transport + Send + Sync + 'static,
+    {
+        self.responder = Some(ResponderHandle(Arc::new(ApiResponder::new(api))));
+        self
+    }
+
     /// Builds the [`Bot`].
     ///
     /// # Errors
@@ -242,6 +327,8 @@ impl BotBuilder {
             hooks: self.hooks,
             handlers: self.handlers,
             cache: Arc::new(Mutex::new(ClientCache::new(self.cache_config))),
+            commands: self.commands,
+            responder: self.responder,
         })
     }
 }
@@ -290,8 +377,17 @@ impl Bot {
         let cache = Arc::clone(&self.cache);
         let hooks = self.hooks.clone();
         let handlers = self.handlers.clone();
+        let commands = self.commands.clone();
+        let responder = self.responder.clone();
         connection.on_any(move |event| {
-            dispatch_event(event, &cache, &hooks, &handlers);
+            dispatch_event(
+                event,
+                &cache,
+                &hooks,
+                &handlers,
+                commands.as_deref(),
+                responder.as_ref(),
+            );
         });
 
         connection.run_until(|| shutdown.load(Ordering::SeqCst))
@@ -322,6 +418,8 @@ fn dispatch_event(
     cache: &Mutex<ClientCache>,
     hooks: &Hooks,
     handlers: &[BotHandler],
+    commands: Option<&Mutex<CommandRegistry>>,
+    responder: Option<&ResponderHandle>,
 ) {
     {
         let mut cache = cache
@@ -335,6 +433,14 @@ fn dispatch_event(
     }
 
     let mut failed = false;
+
+    if let Some(error) = command_error_for_event(event, cache, commands, responder) {
+        failed = true;
+        if let Some(on_error) = &hooks.on_error {
+            on_error(event, error.message());
+        }
+    }
+
     for entry in handlers {
         if !entry.filter.matches(event) {
             continue;
@@ -353,6 +459,62 @@ fn dispatch_event(
     if let Some(after_invoke) = &hooks.after_invoke {
         after_invoke(event);
     }
+}
+
+fn command_error_for_event(
+    event: &Event,
+    cache: &Mutex<ClientCache>,
+    commands: Option<&Mutex<CommandRegistry>>,
+    responder: Option<&ResponderHandle>,
+) -> Option<CommandError> {
+    let Event::MessageCreate(message) = event else {
+        return None;
+    };
+    if message.author.user().bot {
+        return None;
+    }
+    let commands = commands?;
+    dispatch_commands(message, cache, commands, responder).err()
+}
+
+fn dispatch_commands(
+    message: &models::Message,
+    cache: &Mutex<ClientCache>,
+    commands: &Mutex<CommandRegistry>,
+    responder: Option<&ResponderHandle>,
+) -> Result<bool, CommandError> {
+    let mut registry = commands
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(mut context) = registry.parse_context(&message.content) else {
+        return Ok(false);
+    };
+
+    let guild_id = message.guild_id.map(|id| id.get());
+    let channel_id = Some(message.channel_id.get());
+    let user_id = Some(message.author.id().get());
+    let permissions = {
+        let cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match (guild_id, user_id) {
+            (Some(guild_id), Some(user_id)) => cache
+                .permissions_for(guild_id, user_id, message.channel_id.get())
+                .unwrap_or_default(),
+            _ => enums::Permissions::none(),
+        }
+    };
+
+    context = context
+        .with_ids(guild_id, channel_id, user_id, Some(message.id.get()))
+        .with_permissions(permissions)
+        .with_bot_author(message.author.user().bot);
+
+    if let Some(responder) = responder {
+        context = context.with_responder(Arc::clone(&responder.0));
+    }
+
+    registry.try_dispatch_with(context)
 }
 
 /// A handle to a bot running on a background thread.
@@ -522,6 +684,51 @@ impl EventWaiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commands::{CommandError, CommandRegistry, Context, Responder};
+
+    #[derive(Default)]
+    struct RecordingResponder {
+        messages: Mutex<Vec<String>>,
+    }
+
+    impl Responder for RecordingResponder {
+        fn send(&self, channel_id: u64, content: &str) -> Result<(), CommandError> {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("send {channel_id}: {content}"));
+            Ok(())
+        }
+
+        fn reply(
+            &self,
+            channel_id: u64,
+            message_id: u64,
+            content: &str,
+        ) -> Result<(), CommandError> {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("reply {channel_id}/{message_id}: {content}"));
+            Ok(())
+        }
+
+        fn send_embed(&self, channel_id: u64, _embed: &data::Value) -> Result<(), CommandError> {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("embed {channel_id}"));
+            Ok(())
+        }
+
+        fn typing(&self, channel_id: u64) -> Result<(), CommandError> {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("typing {channel_id}"));
+            Ok(())
+        }
+    }
 
     #[test]
     fn bot_builder_requires_token() {
@@ -719,25 +926,27 @@ mod tests {
     }
 
     fn message_frame() -> GatewayFrame {
-        GatewayFrame::Text(
-            GatewayPayload::from_json(
-                r#"{
-                    "op": 0,
-                    "s": 2,
-                    "t": "MESSAGE_CREATE",
-                    "d": {
-                        "id": "10",
-                        "channel_id": "4",
-                        "guild_id": "2",
-                        "author": {"id": "6", "username": "winter"},
-                        "content": "hello",
-                        "timestamp": "2021-08-01T12:34:56Z"
-                    }
-                }"#,
-            )
-            .unwrap()
-            .to_json(),
-        )
+        message_frame_with("hello", false)
+    }
+
+    fn message_frame_with(content: &str, bot_author: bool) -> GatewayFrame {
+        let bot_field = if bot_author { r#", "bot": true"# } else { "" };
+        let payload = format!(
+            r#"{{
+                "op": 0,
+                "s": 2,
+                "t": "MESSAGE_CREATE",
+                "d": {{
+                    "id": "10",
+                    "channel_id": "4",
+                    "guild_id": "2",
+                    "author": {{"id": "6", "username": "winter"{bot_field}}},
+                    "content": "{content}",
+                    "timestamp": "2021-08-01T12:34:56Z"
+                }}
+            }}"#
+        );
+        GatewayFrame::Text(GatewayPayload::from_json(&payload).unwrap().to_json())
     }
 
     fn close_frame() -> GatewayFrame {
@@ -823,6 +1032,134 @@ mod tests {
 
         assert_eq!(after.load(Ordering::SeqCst), 0);
         assert_eq!(*errors.lock().unwrap(), vec!["handler failed"]);
+    }
+
+    #[test]
+    fn bot_dispatches_commands_with_metadata_and_responder() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&seen);
+
+        let mut registry = CommandRegistry::new("!");
+        registry
+            .add("ping", Vec::<String>::new(), move |context: &Context| {
+                output.lock().unwrap().push(format!(
+                    "{}:{}:{}:{}",
+                    context.name,
+                    context.user_id.unwrap_or_default(),
+                    context.channel_id.unwrap_or_default(),
+                    context.arguments.join(",")
+                ));
+                context.respond("pong")
+            })
+            .unwrap();
+
+        let responder = Arc::new(RecordingResponder::default());
+        let responses = Arc::clone(&responder);
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let message_handlers = Arc::clone(&handler_calls);
+
+        let bot = Bot::builder()
+            .token("Bot TOKEN")
+            .intents_flags(Intents::none())
+            .commands(registry)
+            .responder(responder)
+            .on_event_name("MESSAGE_CREATE", move |_| {
+                message_handlers.fetch_add(1, Ordering::SeqCst);
+            })
+            .build()
+            .unwrap();
+
+        let transport = ScriptedTransport {
+            frames: VecDeque::from([
+                hello_frame(),
+                ready_frame(),
+                message_frame_with("!ping hello world", false),
+                close_frame(),
+            ]),
+            ..ScriptedTransport::default()
+        };
+
+        bot.run(transport).unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), vec!["ping:6:4:hello,world"]);
+        assert_eq!(*responses.messages.lock().unwrap(), vec!["send 4: pong"]);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn bot_ignores_commands_from_bot_authors() {
+        let called = Arc::new(AtomicBool::new(false));
+        let command_calls = Arc::clone(&called);
+
+        let mut registry = CommandRegistry::new("!");
+        registry
+            .add("ping", Vec::<String>::new(), move |_: &Context| {
+                command_calls.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+
+        let bot = Bot::builder()
+            .token("Bot TOKEN")
+            .commands(registry)
+            .build()
+            .unwrap();
+
+        let transport = ScriptedTransport {
+            frames: VecDeque::from([
+                hello_frame(),
+                ready_frame(),
+                message_frame_with("!ping", true),
+                close_frame(),
+            ]),
+            ..ScriptedTransport::default()
+        };
+
+        bot.run(transport).unwrap();
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn bot_reports_command_errors_and_skips_after_invoke() {
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let after = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = CommandRegistry::new("!");
+        registry
+            .add(
+                "fail",
+                Vec::<String>::new(),
+                |_: &Context| -> Result<(), &'static str> { Err("command failed") },
+            )
+            .unwrap();
+
+        let error_hook = Arc::clone(&errors);
+        let after_hook = Arc::clone(&after);
+        let bot = Bot::builder()
+            .token("Bot TOKEN")
+            .commands(registry)
+            .after_invoke(move |_| {
+                after_hook.fetch_add(1, Ordering::SeqCst);
+            })
+            .on_error(move |_, message| {
+                error_hook.lock().unwrap().push(message.to_owned());
+            })
+            .build()
+            .unwrap();
+
+        let transport = ScriptedTransport {
+            frames: VecDeque::from([
+                hello_frame(),
+                ready_frame(),
+                message_frame_with("!fail", false),
+                close_frame(),
+            ]),
+            ..ScriptedTransport::default()
+        };
+
+        bot.run(transport).unwrap();
+
+        assert_eq!(*errors.lock().unwrap(), vec!["command failed"]);
+        assert_eq!(after.load(Ordering::SeqCst), 1);
     }
 
     #[test]

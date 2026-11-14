@@ -8,4 +8,6 @@ repository.workspace = true
 description = "Command handling, argument parsing, context menus, and cog extension primitives for discord-rust."
 
 [dependencies]
+data = { package = "discord-rust-data", path = "../data", version = "0.1.0" }
+enums = { package = "discord-rust-enums", path = "../enums", version = "0.1.0" }
 macros = { package = "discord-rust-macros", path = "../macros", version = "0.1.0" }
