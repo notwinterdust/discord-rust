@@ -37,6 +37,7 @@ mod guild;
 mod interaction;
 mod invite;
 mod member;
+mod mention;
 mod message;
 mod monetization;
 mod onboarding;
@@ -101,6 +102,7 @@ pub use interaction::{
 };
 pub use invite::{Invite, InviteChannel, InviteGuild, PartialInviteChannel, PartialInviteGuild};
 pub use member::Member;
+pub use mention::AllowedMentions;
 pub use message::{Attachment, Message, MessageAuthor, MessageReference};
 pub use monetization::{Entitlement, Sku};
 pub use onboarding::{

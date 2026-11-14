@@ -6,6 +6,7 @@
 //! themselves.
 
 use except::HttpError;
+use models::{AllowedMentions, Embed};
 
 use crate::{HttpClient, HttpResponse, Transport};
 use data::{Object, Value};
@@ -303,6 +304,80 @@ impl<T: Transport> DiscordApi<T> {
             self.client.post(format!("channels/{channel_id}/messages")),
             &Value::from(body),
         )
+    }
+
+    /// Sends a plain-text message with explicit allowed-mention rules.
+    pub fn send_message_with_mentions(
+        &self,
+        channel_id: u64,
+        content: &str,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("allowed_mentions", mentions.to_value());
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a reply with explicit allowed-mention rules.
+    pub fn send_reply_with_mentions(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+        content: &str,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut reference = Object::new();
+        reference.insert("message_id", Value::from(message_id.to_string()));
+        reference.insert("fail_if_not_exists", Value::from(false));
+
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("message_reference", Value::from(reference));
+        body.insert("allowed_mentions", mentions.to_value());
+
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends an already encoded embed with explicit allowed-mention rules.
+    pub fn send_embed_with_mentions(
+        &self,
+        channel_id: u64,
+        embed: &Value,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("embeds", Value::from(vec![embed.clone()]));
+        body.insert("allowed_mentions", mentions.to_value());
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a typed embed to a channel.
+    pub fn send_embed_model(
+        &self,
+        channel_id: u64,
+        embed: &Embed,
+    ) -> Result<HttpResponse, HttpError> {
+        self.send_embed(channel_id, &embed.to_value())
+    }
+
+    /// Sends a typed embed with explicit allowed-mention rules.
+    pub fn send_embed_model_with_mentions(
+        &self,
+        channel_id: u64,
+        embed: &Embed,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        self.send_embed_with_mentions(channel_id, &embed.to_value(), mentions)
     }
 
     /// Shows the typing indicator in a channel.
@@ -879,6 +954,86 @@ impl<T: Transport> DiscordApi<T> {
         )
     }
 
+    /// Creates a webhook with the given default name.
+    pub fn create_webhook_named(
+        &self,
+        channel_id: u64,
+        name: &str,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("name", Value::from(name));
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/webhooks")),
+            &Value::from(body),
+        )
+    }
+
+    /// Executes a webhook with plain-text content.
+    pub fn execute_webhook_content(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        content: &str,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        self.execute_webhook(webhook_id, token, &Value::from(body))
+    }
+
+    /// Executes a webhook with plain-text content and allowed-mention rules.
+    pub fn execute_webhook_content_with_mentions(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        content: &str,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("allowed_mentions", mentions.to_value());
+        self.execute_webhook(webhook_id, token, &Value::from(body))
+    }
+
+    /// Executes a webhook with a typed embed.
+    pub fn execute_webhook_model(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        embed: &Embed,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("embeds", Value::from(vec![embed.to_value()]));
+        self.execute_webhook(webhook_id, token, &Value::from(body))
+    }
+
+    /// Edits a message previously sent by a webhook.
+    pub fn edit_webhook_message(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        message_id: u64,
+        body: &Value,
+    ) -> Result<HttpResponse, HttpError> {
+        self.client.execute_json(
+            self.client.patch(format!(
+                "webhooks/{webhook_id}/{token}/messages/{message_id}"
+            )),
+            body,
+        )
+    }
+
+    /// Deletes a message previously sent by a webhook.
+    pub fn delete_webhook_message(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        message_id: u64,
+    ) -> Result<HttpResponse, HttpError> {
+        self.client.execute_delete(format!(
+            "webhooks/{webhook_id}/{token}/messages/{message_id}"
+        ))
+    }
+
     // =========================================================================
     // Application Commands
     // =========================================================================
@@ -1275,5 +1430,89 @@ mod tests {
         assert!(body(0).contains("\"content\":\"hello\""));
         assert!(body(1).contains("message_reference"));
         assert!(body(2).contains("embeds"));
+    }
+
+    #[test]
+    fn allowed_mentions_and_embed_models_encode_payloads() {
+        let (api, transport) = make_api();
+        let mentions = AllowedMentions::none()
+            .add_user(10_u64)
+            .with_replied_user(true);
+        let embed = Embed::new().with_title("Title");
+
+        api.send_message_with_mentions(1, "hello", &mentions)
+            .unwrap();
+        api.send_reply_with_mentions(1, 2, "reply", &mentions)
+            .unwrap();
+        api.send_embed_with_mentions(1, &Value::object(), &mentions)
+            .unwrap();
+        api.send_embed_model(1, &embed).unwrap();
+        api.send_embed_model_with_mentions(1, &embed, &mentions)
+            .unwrap();
+
+        let reqs = transport.requests.borrow();
+        assert_eq!(reqs.len(), 5);
+        assert!(
+            reqs.iter()
+                .all(|request| request.method == HttpMethod::Post)
+        );
+        assert!(
+            reqs.iter()
+                .all(|request| request.path == "channels/1/messages")
+        );
+
+        let body =
+            |index: usize| String::from_utf8(reqs[index].body.clone().expect("json body")).unwrap();
+        assert!(body(0).contains("\"content\":\"hello\""));
+        assert!(body(0).contains("\"allowed_mentions\""));
+        assert!(body(0).contains("\"users\":[\"10\"]"));
+        assert!(body(0).contains("\"replied_user\":true"));
+        assert!(body(1).contains("message_reference"));
+        assert!(body(1).contains("\"allowed_mentions\""));
+        assert!(body(2).contains("\"embeds\""));
+        assert!(body(2).contains("\"allowed_mentions\""));
+        assert!(body(3).contains("\"title\":\"Title\""));
+        assert!(!body(3).contains("allowed_mentions"));
+        assert!(body(4).contains("\"title\":\"Title\""));
+        assert!(body(4).contains("\"allowed_mentions\""));
+    }
+
+    #[test]
+    fn webhook_helpers_use_expected_routes() {
+        let (api, transport) = make_api();
+        let embed = Embed::new().with_title("Hook");
+
+        api.create_webhook_named(1, "hooks").unwrap();
+        api.execute_webhook_content(2, "token", "hello").unwrap();
+        api.execute_webhook_content_with_mentions(2, "token", "hello", &AllowedMentions::none())
+            .unwrap();
+        api.execute_webhook_model(2, "token", &embed).unwrap();
+        api.edit_webhook_message(2, "token", 3, &Value::object())
+            .unwrap();
+        api.delete_webhook_message(2, "token", 3).unwrap();
+
+        let reqs = transport.requests.borrow();
+        assert_eq!(reqs.len(), 6);
+        assert_eq!(reqs[0].path, "channels/1/webhooks");
+        assert_eq!(reqs[0].method, HttpMethod::Post);
+        assert_eq!(reqs[1].path, "webhooks/2/token");
+        assert_eq!(reqs[1].method, HttpMethod::Post);
+        assert_eq!(reqs[2].path, "webhooks/2/token");
+        assert_eq!(reqs[3].path, "webhooks/2/token");
+        assert!(
+            reqs[3].body.as_ref().is_some_and(|body| {
+                String::from_utf8_lossy(body).contains("\"title\":\"Hook\"")
+            })
+        );
+        assert_eq!(reqs[4].path, "webhooks/2/token/messages/3");
+        assert_eq!(reqs[4].method, HttpMethod::Patch);
+        assert_eq!(reqs[5].path, "webhooks/2/token/messages/3");
+        assert_eq!(reqs[5].method, HttpMethod::Delete);
+
+        let body =
+            |index: usize| String::from_utf8(reqs[index].body.clone().expect("json body")).unwrap();
+        assert!(body(0).contains("\"name\":\"hooks\""));
+        assert!(body(1).contains("\"content\":\"hello\""));
+        assert!(body(2).contains("\"allowed_mentions\""));
     }
 }
