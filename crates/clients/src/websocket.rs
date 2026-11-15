@@ -52,6 +52,13 @@ impl WebSocketIo for TcpStream {
     }
 }
 
+#[cfg(feature = "tls")]
+impl WebSocketIo for crate::tls::TlsStream {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        crate::tls::TlsStream::set_read_timeout(self, timeout)
+    }
+}
+
 /// Creates fresh byte streams for WebSocket connections.
 ///
 /// A connector is called for every gateway (re)connect, so it owns any TLS
@@ -122,6 +129,43 @@ impl WebSocketConnector for TcpConnector {
             || format!("{host}:{port} did not resolve"),
             |error| error.to_string(),
         )))
+    }
+}
+
+/// A [`WebSocketConnector`] backed by rustls.
+///
+/// The connector validates Discord's certificate against the bundled web
+/// public roots, so `wss://` gateway URLs work without host configuration.
+/// It is available when the `tls` feature is enabled.
+#[cfg(feature = "tls")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TlsConnector {
+    timeout: Option<Duration>,
+}
+
+#[cfg(feature = "tls")]
+impl TlsConnector {
+    /// Creates a connector with the operating system's default timeout.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { timeout: None }
+    }
+
+    /// Sets the connect and handshake timeout.
+    #[must_use]
+    pub const fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            timeout: Some(timeout),
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+impl WebSocketConnector for TlsConnector {
+    type Stream = crate::tls::TlsStream;
+
+    fn connect(&mut self, host: &str, port: u16) -> Result<Self::Stream, GatewayTransportError> {
+        crate::tls::TlsStream::connect(host, port, self.timeout).map_err(GatewayTransportError::new)
     }
 }
 

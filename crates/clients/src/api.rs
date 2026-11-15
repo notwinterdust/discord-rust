@@ -5,11 +5,83 @@
 //! [`HttpResponse`]; callers may decode the body with [`models`] or handle it
 //! themselves.
 
+use std::error::Error;
+use std::fmt;
+
 use except::HttpError;
-use models::{AllowedMentions, Embed};
+use models::{AllowedMentions, CastError, Embed};
 
 use crate::{HttpClient, HttpResponse, Transport};
 use data::{Object, Value};
+
+/// A typed error returned by the convenience REST methods.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiError {
+    /// The request failed at the HTTP or transport layer.
+    Http(HttpError),
+    /// The response body was not valid JSON.
+    Json(String),
+    /// The JSON response did not match the requested model.
+    Model(CastError),
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(error) => write!(f, "{error}"),
+            Self::Json(message) => write!(f, "could not decode JSON: {message}"),
+            Self::Model(error) => write!(f, "could not decode model: {error}"),
+        }
+    }
+}
+
+impl Error for ApiError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Http(error) => Some(error),
+            Self::Model(error) => Some(error),
+            Self::Json(_) => None,
+        }
+    }
+}
+
+impl From<HttpError> for ApiError {
+    fn from(error: HttpError) -> Self {
+        Self::Http(error)
+    }
+}
+
+impl From<CastError> for ApiError {
+    fn from(error: CastError) -> Self {
+        Self::Model(error)
+    }
+}
+
+/// Checks a response and decodes its JSON body into a model.
+fn decode<T>(
+    response: HttpResponse,
+    parse: impl FnOnce(&Value) -> Result<T, CastError>,
+) -> Result<T, ApiError> {
+    if !response.is_success() {
+        return Err(ApiError::Http(response_error(&response)));
+    }
+    let value = response.json()?;
+    parse(&value).map_err(ApiError::Model)
+}
+
+/// Converts an unsuccessful response into a structured [`HttpError`].
+fn response_error(response: &HttpResponse) -> HttpError {
+    let error = response.json().ok().and_then(|value| {
+        let object = value.as_object()?;
+        let code = match object.get("code") {
+            Some(Value::Number(number)) => number.as_i64()?,
+            _ => return None,
+        };
+        let message = object.get("message").and_then(Value::as_str)?;
+        Some(except::DiscordError::new(code, message))
+    });
+    HttpError::status(response.status, error)
+}
 
 /// REST operations for core Discord resources.
 #[derive(Clone, Debug)]
@@ -52,6 +124,24 @@ impl<T: Transport> DiscordApi<T> {
         self.client.execute_get(format!("users/{user_id}"))
     }
 
+    /// Fetches the current bot user as a typed [`models::User`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn current_user_typed(&self) -> Result<models::User, ApiError> {
+        decode(self.user("@me")?, models::User::from_value)
+    }
+
+    /// Fetches a user as a typed [`models::User`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn user_typed(&self, user_id: &str) -> Result<models::User, ApiError> {
+        decode(self.user(user_id)?, models::User::from_value)
+    }
+
     /// Fetches the current bot user's guild list.
     pub fn current_user_guilds(&self) -> Result<HttpResponse, HttpError> {
         self.client.execute_get("users/@me/guilds")
@@ -83,6 +173,15 @@ impl<T: Transport> DiscordApi<T> {
         self.client.execute_get(format!("guilds/{guild_id}"))
     }
 
+    /// Fetches a guild as a typed [`models::Guild`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn guild_typed(&self, guild_id: u64) -> Result<models::Guild, ApiError> {
+        decode(self.guild(guild_id)?, models::Guild::from_value)
+    }
+
     /// Fetches guild preview (works without being a member).
     pub fn guild_preview(&self, guild_id: u64) -> Result<HttpResponse, HttpError> {
         self.client
@@ -112,6 +211,24 @@ impl<T: Transport> DiscordApi<T> {
     /// Fetches a channel.
     pub fn channel(&self, channel_id: u64) -> Result<HttpResponse, HttpError> {
         self.client.execute_get(format!("channels/{channel_id}"))
+    }
+
+    /// Fetches a channel as a typed [`models::GuildChannel`].
+    ///
+    /// `guild_id` should be supplied for guild channels; pass zero for
+    /// direct-message channels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn channel_typed(
+        &self,
+        channel_id: u64,
+        guild_id: u64,
+    ) -> Result<models::GuildChannel, ApiError> {
+        decode(self.channel(channel_id)?, |value| {
+            models::GuildChannel::from_value(value, guild_id)
+        })
     }
 
     /// Modifies a channel or thread.
@@ -252,6 +369,22 @@ impl<T: Transport> DiscordApi<T> {
             .execute_get(format!("channels/{channel_id}/messages/{message_id}"))
     }
 
+    /// Fetches a message as a typed [`models::Message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn message_typed(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+    ) -> Result<models::Message, ApiError> {
+        decode(
+            self.message(channel_id, message_id)?,
+            models::Message::from_value,
+        )
+    }
+
     /// Creates a message using an already encoded JSON body.
     pub fn create_message(
         &self,
@@ -272,6 +405,22 @@ impl<T: Transport> DiscordApi<T> {
         self.client.execute_json(
             self.client.post(format!("channels/{channel_id}/messages")),
             &Value::from(body),
+        )
+    }
+
+    /// Sends a plain-text message and decodes the created [`models::Message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn send_message_typed(
+        &self,
+        channel_id: u64,
+        content: &str,
+    ) -> Result<models::Message, ApiError> {
+        decode(
+            self.send_message(channel_id, content)?,
+            models::Message::from_value,
         )
     }
 
@@ -368,6 +517,22 @@ impl<T: Transport> DiscordApi<T> {
         embed: &Embed,
     ) -> Result<HttpResponse, HttpError> {
         self.send_embed(channel_id, &embed.to_value())
+    }
+
+    /// Sends a typed embed and decodes the created [`models::Message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn send_embed_typed(
+        &self,
+        channel_id: u64,
+        embed: &Embed,
+    ) -> Result<models::Message, ApiError> {
+        decode(
+            self.send_embed_model(channel_id, embed)?,
+            models::Message::from_value,
+        )
     }
 
     /// Sends a typed embed with explicit allowed-mention rules.

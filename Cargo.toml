@@ -19,10 +19,16 @@ repository.workspace = true
 description = "A feature-rich Discord API and Gateway library for Rust."
 readme = "README.md"
 
+[features]
+default = ["tls"]
+# Enables rustls-backed HTTPS and WSS transports. Disable it to keep the whole
+# dependency graph standard-library-only and supply your own transport.
+tls = ["clients/tls"]
+
 [dependencies]
 abc = { package = "discord-rust-abc", path = "crates/abc", version = "0.1.0" }
 app = { package = "discord-rust-app", path = "crates/app", version = "0.1.0" }
-clients = { package = "discord-rust-clients", path = "crates/clients", version = "0.1.0" }
+clients = { package = "discord-rust-clients", path = "crates/clients", version = "0.1.0", default-features = false }
 commands = { package = "discord-rust-commands", path = "crates/commands", version = "0.1.0" }
 data = { package = "discord-rust-data", path = "crates/data", version = "0.1.0" }
 enums = { package = "discord-rust-enums", path = "crates/enums", version = "0.1.0" }

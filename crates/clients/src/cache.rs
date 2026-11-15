@@ -678,6 +678,58 @@ impl ClientCache {
     }
 }
 
+/// A shared, read-only view of a [`ClientCache`] for command contexts.
+///
+/// The bot runtime attaches this wrapper to every command context so handlers
+/// can look up guilds, channels, members and messages without locking the cache
+/// themselves.
+#[derive(Clone, Debug)]
+pub struct SharedCache {
+    inner: std::sync::Arc<std::sync::Mutex<ClientCache>>,
+}
+
+impl SharedCache {
+    /// Wraps a shared cache handle.
+    #[must_use]
+    pub const fn new(inner: std::sync::Arc<std::sync::Mutex<ClientCache>>) -> Self {
+        Self { inner }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&ClientCache) -> R) -> R {
+        let cache = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&cache)
+    }
+}
+
+impl commands::ContextCache for SharedCache {
+    fn guild(&self, guild_id: u64) -> Option<models::Guild> {
+        self.with(|cache| cache.guild(guild_id).cloned())
+    }
+
+    fn channel(&self, channel_id: u64) -> Option<models::GuildChannel> {
+        self.with(|cache| cache.channel(channel_id).cloned())
+    }
+
+    fn user(&self, user_id: u64) -> Option<models::User> {
+        self.with(|cache| cache.users.get(user_id).cloned())
+    }
+
+    fn member(&self, guild_id: u64, user_id: u64) -> Option<models::Member> {
+        self.with(|cache| cache.member(guild_id, user_id).cloned())
+    }
+
+    fn message(&self, message_id: u64) -> Option<models::Message> {
+        self.with(|cache| cache.messages.get(message_id).cloned())
+    }
+
+    fn permissions_for(&self, guild_id: u64, user_id: u64, channel_id: u64) -> Option<Permissions> {
+        self.with(|cache| cache.permissions_for(guild_id, user_id, channel_id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use data::Value;
 use except::HttpError;
 use util::encode_query;
 
@@ -232,6 +233,17 @@ impl HttpResponse {
     /// Returns [`HttpError::Decode`] when the body is not valid UTF-8.
     pub fn text(&self) -> Result<&str, HttpError> {
         std::str::from_utf8(&self.body).map_err(|error| HttpError::decode(error.to_string()))
+    }
+
+    /// Parses the response body as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpError::Decode`] when the body is not valid UTF-8 or does
+    /// not contain a JSON value.
+    pub fn json(&self) -> Result<Value, HttpError> {
+        let text = self.text()?;
+        data::from_str(text).map_err(|error| HttpError::decode(error.to_string()))
     }
 
     /// Parses the rate limit headers in this response, if any are present.

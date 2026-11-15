@@ -21,11 +21,17 @@ pub mod gateway;
 pub mod health;
 pub mod http;
 pub mod shard;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod websocket;
 
-pub use api::DiscordApi;
-pub use bot::{Bot, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult};
-pub use cache::{Cache, CacheConfig, ClientCache, MemberCache, MessageEditTracker};
+pub use api::{ApiError, DiscordApi};
+pub use bot::{
+    Bot, BotApi, BotBuildError, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult,
+};
+pub use cache::{Cache, CacheConfig, ClientCache, MemberCache, MessageEditTracker, SharedCache};
+#[cfg(feature = "tls")]
+pub use client::HttpsTransport;
 pub use client::{
     Client, ClientState, HttpClient, PendingResponse, RetryPolicy, SecureTransport, TcpTransport,
     ThreadedRequestExecutor, Transport,
@@ -46,6 +52,8 @@ pub use health::HealthReport;
 pub use http::{HttpMethod, HttpRequest, HttpResponse, RateLimit, RateLimitScope};
 pub use shard::{ConcurrentShardRuntime, Shard, ShardHandle, ShardManager};
 pub use util::{ThreadPool, ThreadPoolBuilder};
+#[cfg(feature = "tls")]
+pub use websocket::TlsConnector;
 pub use websocket::{
     TcpConnector, WebSocketClient, WebSocketConnector, WebSocketGateway, WebSocketIo,
     WebSocketStream,
