@@ -16,12 +16,34 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use data::Value;
+use data::{Object, Value};
 use enums::Permissions;
+use models::{CommandOptionValue, Embed, Guild, GuildChannel, Interaction, Member, Message, User};
+
+/// The stage that produced a [`CommandError`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CommandErrorKind {
+    /// An error without a more specific classification.
+    #[default]
+    Other,
+    /// An argument could not be parsed.
+    Parsing,
+    /// A command check rejected the invocation.
+    Check,
+    /// The command handler failed.
+    Handler,
+    /// The response could not be delivered.
+    Response,
+    /// The context is missing information the command needs.
+    Context,
+    /// An interaction-specific operation failed.
+    Interaction,
+}
 
 /// An error raised while parsing or invoking a command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandError {
+    kind: CommandErrorKind,
     message: String,
 }
 
@@ -30,8 +52,42 @@ impl CommandError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: CommandErrorKind::Other,
             message: message.into(),
         }
+    }
+
+    /// Creates a command error with an explicit category.
+    #[must_use]
+    pub fn with_kind(kind: CommandErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// Creates a parsing error.
+    #[must_use]
+    pub fn parsing(message: impl Into<String>) -> Self {
+        Self::with_kind(CommandErrorKind::Parsing, message)
+    }
+
+    /// Creates a check error.
+    #[must_use]
+    pub fn check(message: impl Into<String>) -> Self {
+        Self::with_kind(CommandErrorKind::Check, message)
+    }
+
+    /// Creates a response error.
+    #[must_use]
+    pub fn response(message: impl Into<String>) -> Self {
+        Self::with_kind(CommandErrorKind::Response, message)
+    }
+
+    /// Returns the error category.
+    #[must_use]
+    pub const fn kind(&self) -> CommandErrorKind {
+        self.kind
     }
 
     /// Returns the error message.
@@ -115,6 +171,44 @@ pub trait Responder: Send + Sync {
     fn typing(&self, channel_id: u64) -> Result<(), CommandError>;
 }
 
+/// Read-only cache access available to command handlers.
+///
+/// The command crate deliberately does not depend on the client cache type.
+/// The bot runtime supplies an implementation backed by its live cache, while
+/// tests can provide a small in-memory implementation.
+pub trait ContextCache: Send + Sync {
+    /// Returns a cached guild.
+    fn guild(&self, guild_id: u64) -> Option<Guild>;
+    /// Returns a cached channel.
+    fn channel(&self, channel_id: u64) -> Option<GuildChannel>;
+    /// Returns a cached user.
+    fn user(&self, user_id: u64) -> Option<User>;
+    /// Returns a cached guild member.
+    fn member(&self, guild_id: u64, user_id: u64) -> Option<Member>;
+    /// Returns a cached message.
+    fn message(&self, message_id: u64) -> Option<Message>;
+    /// Computes a member's effective permissions in a channel.
+    fn permissions_for(&self, guild_id: u64, user_id: u64, channel_id: u64) -> Option<Permissions>;
+}
+
+/// Sends interaction responses without coupling the command framework to a
+/// concrete REST client.
+pub trait InteractionResponder: Send + Sync {
+    /// Sends the initial interaction callback body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the callback cannot be sent.
+    fn callback(&self, body: &Value) -> Result<(), CommandError>;
+
+    /// Sends a follow-up message after the initial response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the follow-up cannot be sent.
+    fn followup(&self, body: &Value) -> Result<(), CommandError>;
+}
+
 /// A parsed command invocation and the message metadata surrounding it.
 #[derive(Clone, Default)]
 pub struct Context {
@@ -134,7 +228,24 @@ pub struct Context {
     pub permissions: Permissions,
     /// Whether the invoking author is a bot.
     pub author_is_bot: bool,
+    /// Slash-command options keyed by name, including nested subcommand options.
+    pub command_options: Vec<(String, CommandOptionValue)>,
+    /// The invoking message, when the command came from a message.
+    pub message: Option<Arc<Message>>,
+    /// The guild the command was invoked in, when cached.
+    pub guild: Option<Arc<Guild>>,
+    /// The invoking channel, when cached.
+    pub channel: Option<Arc<GuildChannel>>,
+    /// The invoking guild member, when available.
+    pub member: Option<Arc<Member>>,
+    /// The invoking user.
+    pub author: Option<Arc<User>>,
+    /// The interaction that invoked the command, when it came from an
+    /// application command.
+    pub interaction: Option<Arc<Interaction>>,
+    cache: Option<Arc<dyn ContextCache>>,
     responder: Option<Arc<dyn Responder>>,
+    interaction_responder: Option<Arc<dyn InteractionResponder>>,
 }
 
 impl fmt::Debug for Context {
@@ -148,7 +259,19 @@ impl fmt::Debug for Context {
             .field("message_id", &self.message_id)
             .field("permissions", &self.permissions)
             .field("author_is_bot", &self.author_is_bot)
+            .field("command_options", &self.command_options.len())
+            .field("has_message", &self.message.is_some())
+            .field("has_guild", &self.guild.is_some())
+            .field("has_channel", &self.channel.is_some())
+            .field("has_member", &self.member.is_some())
+            .field("has_author", &self.author.is_some())
+            .field("has_interaction", &self.interaction.is_some())
+            .field("has_cache", &self.cache.is_some())
             .field("has_responder", &self.responder.is_some())
+            .field(
+                "has_interaction_responder",
+                &self.interaction_responder.is_some(),
+            )
             .finish()
     }
 }
@@ -163,6 +286,7 @@ impl PartialEq for Context {
             && self.message_id == other.message_id
             && self.permissions == other.permissions
             && self.author_is_bot == other.author_is_bot
+            && self.command_options == other.command_options
     }
 }
 
@@ -222,6 +346,122 @@ impl Context {
         self.responder.as_ref()
     }
 
+    /// Attaches the interaction responder used by slash-command responses.
+    #[must_use]
+    pub fn with_interaction_responder(mut self, responder: Arc<dyn InteractionResponder>) -> Self {
+        self.interaction_responder = Some(responder);
+        self
+    }
+
+    /// Attaches the interaction that invoked this command.
+    #[must_use]
+    pub fn with_interaction(mut self, interaction: Arc<Interaction>) -> Self {
+        self.interaction = Some(interaction);
+        self
+    }
+
+    /// Attaches read-only cache access.
+    #[must_use]
+    pub fn with_cache(mut self, cache: Arc<dyn ContextCache>) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Attaches the invoking message.
+    #[must_use]
+    pub fn with_message(mut self, message: Arc<Message>) -> Self {
+        self.message = Some(message);
+        self
+    }
+
+    /// Attaches the invoking guild.
+    #[must_use]
+    pub fn with_guild(mut self, guild: Arc<Guild>) -> Self {
+        self.guild = Some(guild);
+        self
+    }
+
+    /// Attaches the invoking channel.
+    #[must_use]
+    pub fn with_channel(mut self, channel: Arc<GuildChannel>) -> Self {
+        self.channel = Some(channel);
+        self
+    }
+
+    /// Attaches the invoking guild member.
+    #[must_use]
+    pub fn with_member(mut self, member: Arc<Member>) -> Self {
+        self.member = Some(member);
+        self
+    }
+
+    /// Attaches the invoking user.
+    #[must_use]
+    pub fn with_author(mut self, author: Arc<User>) -> Self {
+        self.author = Some(author);
+        self
+    }
+
+    /// Attaches slash-command options.
+    #[must_use]
+    pub fn with_command_options(mut self, options: Vec<(String, CommandOptionValue)>) -> Self {
+        self.command_options = options;
+        self
+    }
+
+    /// Returns the attached cache, if any.
+    #[must_use]
+    pub fn cache(&self) -> Option<&Arc<dyn ContextCache>> {
+        self.cache.as_ref()
+    }
+
+    /// Returns the interaction that invoked this command, if any.
+    #[must_use]
+    pub fn interaction(&self) -> Option<&Arc<Interaction>> {
+        self.interaction.as_ref()
+    }
+
+    /// Returns `true` when this command came from a slash command or context
+    /// menu interaction.
+    #[must_use]
+    pub const fn is_interaction(&self) -> bool {
+        self.interaction.is_some() || self.interaction_responder.is_some()
+    }
+
+    /// Looks up a slash-command option by name.
+    #[must_use]
+    pub fn option(&self, name: &str) -> Option<&CommandOptionValue> {
+        self.command_options
+            .iter()
+            .find_map(|(option, value)| (option == name).then_some(value))
+    }
+
+    /// Returns a string option by name.
+    #[must_use]
+    pub fn option_string(&self, name: &str) -> Option<&str> {
+        self.option(name).and_then(CommandOptionValue::as_str)
+    }
+
+    /// Returns an integer option by name.
+    #[must_use]
+    pub fn option_i64(&self, name: &str) -> Option<i64> {
+        self.option(name).and_then(CommandOptionValue::as_i64)
+    }
+
+    /// Returns a boolean option by name.
+    #[must_use]
+    pub fn option_bool(&self, name: &str) -> Option<bool> {
+        self.option(name).and_then(CommandOptionValue::as_bool)
+    }
+
+    /// Returns a snowflake option by name.
+    #[must_use]
+    pub fn option_snowflake(&self, name: &str) -> Option<u64> {
+        self.option(name)
+            .and_then(CommandOptionValue::as_snowflake)
+            .map(|id| id.get())
+    }
+
     /// Attempts to parse argument at `index` into type `T`.
     ///
     /// # Errors
@@ -234,9 +474,9 @@ impl Context {
         let value = self
             .arguments
             .get(index)
-            .ok_or_else(|| CommandError::new(format!("missing argument at index {index}")))?;
+            .ok_or_else(|| CommandError::parsing(format!("missing argument at index {index}")))?;
         value.parse::<T>().map_err(|error| {
-            CommandError::new(format!("invalid argument at index {index}: {error}"))
+            CommandError::parsing(format!("invalid argument at index {index}: {error}"))
         })
     }
 
@@ -249,9 +489,9 @@ impl Context {
         let value = self
             .arguments
             .get(index)
-            .ok_or_else(|| CommandError::new(format!("missing argument at index {index}")))?;
+            .ok_or_else(|| CommandError::parsing(format!("missing argument at index {index}")))?;
         Self::parse_user_mention(value).ok_or_else(|| {
-            CommandError::new(format!("argument at index {index} is not a user mention"))
+            CommandError::parsing(format!("argument at index {index} is not a user mention"))
         })
     }
 
@@ -265,9 +505,9 @@ impl Context {
         let value = self
             .arguments
             .get(index)
-            .ok_or_else(|| CommandError::new(format!("missing argument at index {index}")))?;
+            .ok_or_else(|| CommandError::parsing(format!("missing argument at index {index}")))?;
         Self::parse_channel_mention(value).ok_or_else(|| {
-            CommandError::new(format!(
+            CommandError::parsing(format!(
                 "argument at index {index} is not a channel mention"
             ))
         })
@@ -284,7 +524,7 @@ impl Context {
             .get(index)
             .ok_or_else(|| CommandError::new(format!("missing argument at index {index}")))?;
         Self::parse_role_mention(value).ok_or_else(|| {
-            CommandError::new(format!("argument at index {index} is not a role mention"))
+            CommandError::parsing(format!("argument at index {index} is not a role mention"))
         })
     }
 
@@ -318,47 +558,120 @@ impl Context {
 
     /// Sends a plain-text response to the invoking channel.
     ///
+    /// For interaction commands this sends an immediate interaction callback;
+    /// for prefix commands it sends a normal channel message.
+    ///
     /// # Errors
     ///
     /// Returns an error when the context has no channel or responder, or the
     /// responder fails.
     pub fn respond(&self, content: impl Into<String>) -> Result<(), CommandError> {
+        let content = content.into();
+        if let Some(responder) = &self.interaction_responder {
+            let mut data = Object::new();
+            data.insert("content", Value::from(content));
+            return responder.callback(&message_body(4, data));
+        }
         let (responder, channel_id) = self.response_target()?;
-        responder.send(channel_id, &content.into())
+        responder.send(channel_id, &content)
     }
 
     /// Sends a reply to the invoking message.
+    ///
+    /// Interaction responses cannot be edited before they are sent, so this is
+    /// equivalent to [`Context::respond`] for slash commands.
     ///
     /// # Errors
     ///
     /// Returns an error when the context has no channel, message or responder,
     /// or the responder fails.
     pub fn reply(&self, content: impl Into<String>) -> Result<(), CommandError> {
+        let content = content.into();
+        if let Some(responder) = &self.interaction_responder {
+            let mut data = Object::new();
+            data.insert("content", Value::from(content));
+            return responder.callback(&message_body(4, data));
+        }
         let (responder, channel_id) = self.response_target()?;
-        let message_id = self
-            .message_id
-            .ok_or_else(|| CommandError::new("command has no message context"))?;
-        responder.reply(channel_id, message_id, &content.into())
+        let message_id = self.message_id.ok_or_else(|| {
+            CommandError::with_kind(CommandErrorKind::Context, "command has no message context")
+        })?;
+        responder.reply(channel_id, message_id, &content)
     }
 
-    /// Sends an embed to the invoking channel.
+    /// Sends a typed embed to the invoking channel.
     ///
     /// # Errors
     ///
     /// Returns an error when the context has no channel or responder, or the
     /// responder fails.
-    pub fn respond_embed(&self, embed: &Value) -> Result<(), CommandError> {
+    pub fn respond_embed(&self, embed: &Embed) -> Result<(), CommandError> {
+        self.respond_embed_value(&embed.to_value())
+    }
+
+    /// Sends an already encoded embed to the invoking channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the context has no channel or responder, or the
+    /// responder fails.
+    pub fn respond_embed_value(&self, embed: &Value) -> Result<(), CommandError> {
+        if let Some(responder) = &self.interaction_responder {
+            let mut data = Object::new();
+            data.insert("embeds", Value::Array(vec![embed.clone()]));
+            return responder.callback(&message_body(4, data));
+        }
         let (responder, channel_id) = self.response_target()?;
         responder.send_embed(channel_id, embed)
+    }
+
+    /// Acknowledges an interaction so a follow-up can be sent later.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not an interaction or the callback fails.
+    pub fn defer(&self) -> Result<(), CommandError> {
+        let responder = self.interaction_responder.as_ref().ok_or_else(|| {
+            CommandError::with_kind(
+                CommandErrorKind::Interaction,
+                "defer is only available for interactions",
+            )
+        })?;
+        let mut body = Object::new();
+        body.insert("type", Value::from(5_u64));
+        responder.callback(&Value::Object(body))
+    }
+
+    /// Sends a follow-up message after an interaction response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not an interaction or the request fails.
+    pub fn followup(&self, content: impl Into<String>) -> Result<(), CommandError> {
+        let responder = self.interaction_responder.as_ref().ok_or_else(|| {
+            CommandError::with_kind(
+                CommandErrorKind::Interaction,
+                "follow-up messages are only available for interactions",
+            )
+        })?;
+        let mut body = Object::new();
+        body.insert("content", Value::from(content.into()));
+        responder.followup(&Value::Object(body))
     }
 
     /// Shows the typing indicator in the invoking channel.
     ///
     /// # Errors
     ///
-    /// Returns an error when the context has no channel or responder, or the
-    /// responder fails.
+    /// Returns an error when the context has no channel or responder, when this
+    /// is an interaction, or when the responder fails.
     pub fn typing(&self) -> Result<(), CommandError> {
+        if self.interaction_responder.is_some() {
+            return Err(CommandError::with_kind(
+                CommandErrorKind::Interaction,
+                "typing indicators are not available for interaction responses",
+            ));
+        }
         let (responder, channel_id) = self.response_target()?;
         responder.typing(channel_id)
     }
@@ -371,13 +684,12 @@ impl Context {
     }
 
     fn response_target(&self) -> Result<(&dyn Responder, u64), CommandError> {
-        let channel_id = self
-            .channel_id
-            .ok_or_else(|| CommandError::new("command has no channel context"))?;
-        let responder = self
-            .responder
-            .as_deref()
-            .ok_or_else(|| CommandError::new("no responder configured"))?;
+        let channel_id = self.channel_id.ok_or_else(|| {
+            CommandError::with_kind(CommandErrorKind::Context, "command has no channel context")
+        })?;
+        let responder = self.responder.as_deref().ok_or_else(|| {
+            CommandError::with_kind(CommandErrorKind::Context, "no responder configured")
+        })?;
         Ok((responder, channel_id))
     }
 
@@ -387,6 +699,13 @@ impl Context {
         child.arguments = arguments;
         child
     }
+}
+
+fn message_body(kind: u64, data: Object) -> Value {
+    let mut body = Object::new();
+    body.insert("type", Value::from(kind));
+    body.insert("data", Value::Object(data));
+    Value::Object(body)
 }
 
 /// A command group organizing subcommands.
@@ -714,6 +1033,22 @@ impl CommandRegistry {
         self.add_with_checks(name, aliases, Vec::new(), handler)
     }
 
+    /// Registers a command without aliases.
+    ///
+    /// This is the common case; [`CommandRegistry::add`] remains available when
+    /// aliases are needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is already registered.
+    pub fn add_command(
+        &mut self,
+        name: impl Into<String>,
+        handler: impl Handler + 'static,
+    ) -> Result<(), &'static str> {
+        self.add(name, Vec::<String>::new(), handler)
+    }
+
     /// Registers a command with checks.
     ///
     /// # Errors
@@ -955,6 +1290,213 @@ impl CommandRegistry {
     }
 }
 
+/// A slash command registration and its handler.
+pub struct SlashCommand {
+    /// The command definition sent to Discord.
+    pub definition: app::CommandDefinition,
+    handler: Box<dyn Handler>,
+    error_handler: Option<ErrorHandler>,
+}
+
+impl SlashCommand {
+    /// Creates a slash command with a name, description and handler.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        handler: impl Handler + 'static,
+    ) -> Self {
+        Self::from_definition(app::CommandDefinition::new(name, description), handler)
+    }
+
+    /// Creates a registration from an application command definition.
+    #[must_use]
+    pub fn from_definition(
+        definition: app::CommandDefinition,
+        handler: impl Handler + 'static,
+    ) -> Self {
+        Self {
+            definition,
+            handler: Box::new(handler),
+            error_handler: None,
+        }
+    }
+
+    /// Replaces the command's error handler.
+    #[must_use]
+    pub fn with_error_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&Context, &CommandError) + Send + Sync + 'static,
+    {
+        self.error_handler = Some(Box::new(handler));
+        self
+    }
+}
+
+/// A registry of application (slash) commands.
+///
+/// The registry owns command handlers and produces the JSON payload used to
+/// register commands with Discord. The bot runtime routes `INTERACTION_CREATE`
+/// events to it and supplies an interaction responder through [`Context`].
+#[derive(Default)]
+pub struct SlashCommandRegistry {
+    commands: Vec<SlashCommand>,
+    checks: Vec<Check>,
+    error_handler: Option<ErrorHandler>,
+}
+
+impl fmt::Debug for SlashCommandRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self
+            .commands
+            .iter()
+            .map(|command| command.definition.name.as_str())
+            .collect();
+        f.debug_struct("SlashCommandRegistry")
+            .field("commands", &names)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SlashCommandRegistry {
+    /// Creates an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a slash command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is already registered.
+    pub fn add(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        handler: impl Handler + 'static,
+    ) -> Result<(), &'static str> {
+        self.register(SlashCommand::new(name, description, handler))
+    }
+
+    /// Registers a slash command from a [`SlashCommand`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is empty or already registered.
+    pub fn register(&mut self, command: SlashCommand) -> Result<(), &'static str> {
+        let name = &command.definition.name;
+        if name.is_empty() {
+            return Err("command name cannot be empty");
+        }
+        if self.name_taken(name) {
+            return Err("command name already exists");
+        }
+        self.commands.push(command);
+        Ok(())
+    }
+
+    /// Registers a command definition with a handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is empty or already registered.
+    pub fn register_definition(
+        &mut self,
+        definition: app::CommandDefinition,
+        handler: impl Handler + 'static,
+    ) -> Result<(), &'static str> {
+        self.register(SlashCommand::from_definition(definition, handler))
+    }
+
+    /// Adds a check that runs before every slash command.
+    pub fn add_check<F>(&mut self, check: F)
+    where
+        F: Fn(&Context) -> Result<(), CommandError> + Send + Sync + 'static,
+    {
+        self.checks.push(Box::new(check));
+    }
+
+    /// Sets the fallback error handler for commands without their own.
+    pub fn set_error_handler<F>(&mut self, handler: F)
+    where
+        F: Fn(&Context, &CommandError) + Send + Sync + 'static,
+    {
+        self.error_handler = Some(Box::new(handler));
+    }
+
+    /// Returns the registered command definitions.
+    pub fn definitions(&self) -> impl Iterator<Item = &app::CommandDefinition> {
+        self.commands.iter().map(|command| &command.definition)
+    }
+
+    /// Returns the number of registered commands.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
+
+    /// Returns `true` when no commands are registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+
+    /// Encodes every command as the JSON array Discord expects.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Array(
+            self.commands
+                .iter()
+                .map(|command| command.definition.to_value())
+                .collect(),
+        )
+    }
+
+    /// Dispatches an interaction context by command name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a check or handler fails. Returns `Ok(false)` when
+    /// no command matches.
+    pub fn try_dispatch_with(&mut self, context: Context) -> Result<bool, CommandError> {
+        let Some(index) = self
+            .commands
+            .iter()
+            .position(|command| command.definition.name == context.name)
+        else {
+            return Ok(false);
+        };
+
+        for check in &self.checks {
+            check(&context)?;
+        }
+
+        let result = {
+            let command = &mut self.commands[index];
+            command.handler.call(&context)
+        };
+
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                if let Some(handler) = &self.commands[index].error_handler {
+                    handler(&context, &error);
+                } else if let Some(handler) = &self.error_handler {
+                    handler(&context, &error);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn name_taken(&self, name: &str) -> bool {
+        self.commands
+            .iter()
+            .any(|command| command.definition.name == name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1102,5 +1644,90 @@ mod tests {
 
         assert!(registry.dispatch("!sum 5 3"));
         assert_eq!(INVOKED_RESULT.load(Ordering::SeqCst), 8);
+    }
+
+    #[test]
+    fn slash_commands_register_encode_and_dispatch() {
+        use std::sync::Mutex;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&seen);
+
+        let mut registry = SlashCommandRegistry::new();
+        registry
+            .add("greet", "Greets a member", move |context: &Context| {
+                output.lock().unwrap().push(format!(
+                    "{}:{}",
+                    context.name,
+                    context.arguments.join(",")
+                ));
+            })
+            .unwrap();
+
+        assert!(
+            registry
+                .add("greet", "Duplicate", |_: &Context| {})
+                .is_err()
+        );
+        assert_eq!(registry.len(), 1);
+
+        let encoded = registry.to_value();
+        let commands = encoded.as_array().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0]
+                .as_object()
+                .unwrap()
+                .get("name")
+                .and_then(Value::as_str),
+            Some("greet")
+        );
+
+        assert_eq!(
+            registry.try_dispatch_with(Context::new("greet", vec!["winter".into()])),
+            Ok(true)
+        );
+        assert_eq!(*seen.lock().unwrap(), vec!["greet:winter"]);
+        assert_eq!(
+            registry.try_dispatch_with(Context::new("missing", Vec::new())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn slash_command_errors_reach_the_error_handler() {
+        use std::sync::Mutex;
+
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&errors);
+
+        let mut registry = SlashCommandRegistry::new();
+        registry
+            .add("fail", "Fails", |_: &Context| -> Result<(), &'static str> {
+                Err("failed")
+            })
+            .unwrap();
+        registry.set_error_handler(move |_, error| {
+            output.lock().unwrap().push(error.message().to_owned());
+        });
+
+        assert_eq!(
+            registry.try_dispatch_with(Context::new("fail", Vec::new())),
+            Err(CommandError::new("failed"))
+        );
+        assert_eq!(*errors.lock().unwrap(), vec!["failed"]);
+    }
+
+    #[test]
+    fn command_errors_report_their_category() {
+        assert_eq!(CommandError::new("x").kind(), CommandErrorKind::Other);
+        assert_eq!(
+            CommandError::with_kind(CommandErrorKind::Context, "x").kind(),
+            CommandErrorKind::Context
+        );
+
+        let context = Context::new("test", Vec::new());
+        let error = context.respond("hello").unwrap_err();
+        assert_eq!(error.kind(), CommandErrorKind::Context);
     }
 }

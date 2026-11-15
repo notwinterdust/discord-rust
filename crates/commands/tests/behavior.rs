@@ -140,7 +140,7 @@ fn context_helpers_use_the_configured_responder() {
 
     context.respond("hello").unwrap();
     context.reply("hi").unwrap();
-    context.respond_embed(&Value::object()).unwrap();
+    context.respond_embed_value(&Value::object()).unwrap();
     context.typing().unwrap();
 
     assert_eq!(
