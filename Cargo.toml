@@ -11,7 +11,7 @@ repository = "https://github.com/notwinterdust/discord-rust"
 
 [package]
 name = "discord-rust"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
