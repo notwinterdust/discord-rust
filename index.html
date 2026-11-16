@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>discord-rust | Pure Standard Library Discord Framework</title>
-  <meta name="description" content="A feature-rich, high-performance, and ergonomic Discord API and Gateway library for Rust.">
+  <title>discord-rust | Synchronous Discord Framework for Rust</title>
+  <meta name="description" content="A synchronous, modular Discord API and gateway library for Rust with optional TLS, typed commands, cache and sharding.">
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/code-theme.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -49,7 +49,7 @@
     <section class="hero">
       <h1>The Modern Discord Framework for <span>Rust</span></h1>
       <p>
-        High-performance gateway sharding, typed commands, real-time voice, and ergonomic REST clients built for speed, predictability, and rock-solid reliability.
+        Synchronous gateway sharding, typed commands, voice primitives, and REST clients built for predictable concurrency and a small dependency graph.
       </p>
 
       <div class="hero-actions">
@@ -104,9 +104,9 @@
               <polyline points="9 12 11 14 15 10"></polyline>
             </svg>
           </div>
-          <h3>Type-Safe Architecture</h3>
+          <h3>Type-Safe Models</h3>
           <p>
-            Strongly-typed domain models, Snowflakes, bitflags, and permission checks validate payloads at compile time to eliminate runtime surprises.
+            Strongly-typed domain models, Snowflakes, bitflags, and permission checks decode API payloads with field-aware errors, so malformed data fails where it is read.
           </p>
         </div>
 
@@ -133,10 +133,10 @@
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
           </div>
-          <h3>Auto Sharding Runtime</h3>
+          <h3>Sharding Runtime</h3>
           <p>
-            Built-in multi-shard orchestrator queries Discord's recommendation endpoint and coordinates
-            concurrent workers across CPU cores with automated heartbeat management.
+            <code>ShardManager</code> builds assignments with identify delays from Discord's recommended count, and
+            <code>ConcurrentShardRuntime</code> runs one worker per shard with a shared event channel.
           </p>
         </div>
 
@@ -166,7 +166,20 @@
           <h3>FFmpeg Audio Streaming</h3>
           <p>
             <code>FfmpegSource</code> spawns an <code>ffmpeg</code> child process and streams 48 kHz stereo PCM frames
-            directly into the voice RTP pipeline — files, URLs, or any custom child process.
+            from files, URLs, or custom child processes. You supply the Opus codec and voice encryption backend.
+          </p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+          </div>
+          <h3>Optional TLS</h3>
+          <p>
+            The default <code>tls</code> feature adds <code>rustls</code>-backed HTTPS and WSS transports.
+            Build with <code>--no-default-features</code> to keep the core standard-library only and plug in your own transport.
           </p>
         </div>
       </div>
@@ -196,7 +209,7 @@
           </button>
         </div>
         <div class="agent-banner-footer">
-          <span>All 15 modular sub-crates and 13 documentation guides are available as raw markdown in <code>/content</code>.</span>
+          <span>All modular sub-crates and documentation guides are available as raw markdown in <code>/content</code>.</span>
         </div>
         
       </div>

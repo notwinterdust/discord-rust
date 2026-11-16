@@ -4,82 +4,118 @@
 [![Crates.io](https://img.shields.io/crates/v/discord-rust.svg)](https://crates.io/crates/discord-rust)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A feature-rich, high-performance Discord API and Gateway library for Rust.
+A synchronous, modular Discord API and gateway library for Rust. The runtime
+crates use only the standard library; TLS is an optional layer enabled by the
+default `tls` feature, and the proc-macro crate uses compile-time-only
+dependencies.
 
 ---
 
 ## Features
 
-- **Full Gateway Lifecycle**: Connect, Hello, Identify, Resume, Heartbeat, and automatic reconnection.
-- **Multi-Shard Architecture**: `ShardManager` with automatic shard counting and `ConcurrentShardRuntime`.
-- **LRU In-Memory Cache & Edit Tracking**: Thread-safe `ClientCache` and `MessageEditTracker` with automatic event invalidation.
-- **Bounded Worker Thread Pool**: Dedicated `ThreadPool` with `PooledEventDispatcher` for concurrent event fan-out across CPU cores.
-- **Application Commands & Proc Macros**: Slash commands, typed options, subcommands, and `#[command]` attribute macro for prefix commands.
-- **UI Components & Paginator**: Buttons, select menus, modals, and interactive multi-page `Paginator`.
-- **Voice & FFmpeg Streaming**: Voice gateway protocol, RTP packet framing, `FfmpegSource` child process audio streamer, and volume scaling.
-- **Rich Domain Models**: Users, guilds, channels, roles, messages, embeds, presence, automod, stages, soundboard, and monetization.
-- **Event Ergonomics**: `EventWaiter` for waiting on future matching gateway events with timeouts.
-- **Structured Logging**: Built-in structured logging framework with zero third-party runtime dependencies.
+- **Gateway lifecycle**: connect, Hello, Identify, Ready, Resume, heartbeats and
+  automatic reconnection.
+- **Sharding**: `ShardManager` assignments with identify delays, plus a
+  `ConcurrentShardRuntime` that runs one worker per shard.
+- **Bounded cache**: per-resource `ClientCache` limits and a `MessageEditTracker`
+  for user-message/bot-response pairs.
+- **Worker pools**: `ThreadPool`, `ThreadedEventDispatcher` and
+  `PooledEventDispatcher` for sequential or parallel event handling.
+- **Commands**: prefix commands, slash commands, typed options, command groups
+  and the `#[command]` attribute macro.
+- **Interaction components**: buttons, select menus, text inputs, modals,
+  component routing and a multi-page `Paginator`.
+- **REST client**: raw and typed endpoint helpers, retry policy and optional
+  `rustls` HTTPS transport.
+- **Voice primitives**: voice state, RTP packet framing, `FfmpegSource` PCM
+  streaming and volume scaling.
+- **Typed models**: users, guilds, channels, roles, messages, embeds, presence,
+  automod, stages, soundboard and monetization.
+- **Event utilities**: `EventWaiter` for waiting on future matching events with
+  a timeout.
+- **Structured logging**: `StderrLogger`, `MemoryLogger` and `NullLogger` without
+  a third-party logging runtime.
 
 ---
 
-## Documentation & Wiki
+## Documentation
 
-Explore the full interactive documentation, wiki guides, and complete architecture manuals at:
-**[https://discord-rust.netlify.app/](https://discord-rust.netlify.app/)**
+The interactive guides live at **[https://discord-rust.netlify.app/](https://discord-rust.netlify.app/)**.
+The same pages are available as raw markdown in [`content/`](content/).
 
 ---
 
 ## Installation
-
-Add `discord-rust` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 discord-rust = "0.1.1"
 ```
 
+The `tls` feature is enabled by default. To keep the runtime dependency graph
+standard-library only and supply your own transports:
+
+```toml
+[dependencies]
+discord-rust = { version = "0.1.1", default-features = false }
+```
+
 ---
 
-## Quickstart: Bot Builder
+## Quickstart
 
-For the complete 5-minute interactive tutorial and guide, see the **[Step-by-Step Quickstart on the Docs Site](https://discord-rust.netlify.app/#quickstart)**.
+This bot connects over TLS, logs messages and answers `!ping` and `/ping`.
 
-Here is a quick overview of setting up and running a bot with `BotBuilder`:
+```rust
+use discord_rust::{
+    BotBuilder, CommandRegistry, Context, Event, Intents, SlashCommandRegistry,
+};
 
-```rust,no_run
-use discord_rust::{BotBuilder, Event, Intents};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let token = std::env::var("DISCORD_TOKEN")?;
 
-fn main() {
-    let mut bot = BotBuilder::new()
-        .token("YOUR_BOT_TOKEN")
-        .intents(Intents::default_intents() | Intents::MESSAGE_CONTENT)
-        .on_event(|event| {
-            match event {
-                Event::MessageCreate(msg) => {
-                    println!("Received message: {}", msg.content);
-                }
-                Event::Ready(ready) => {
-                    println!("Connected as {}", ready.user.username);
-                }
-                _ => {}
-            }
+    let mut prefix = CommandRegistry::new("!");
+    prefix
+        .add_command("ping", |context: &Context| context.respond("Pong!"))
+        .expect("register !ping");
+
+    let mut slash = SlashCommandRegistry::new();
+    slash
+        .add("ping", "Check that the bot is online", |context: &Context| {
+            context.respond("Pong!")
         })
-        .build()
-        .expect("Failed to build bot");
+        .expect("register /ping");
 
-    // Start background shard workers and wait
-    let handles = bot.start_shards();
-    for handle in handles {
-        let _ = handle.join();
-    }
+    let bot = BotBuilder::new()
+        .token(token)
+        .intents_flags(Intents::default() | Intents::MESSAGE_CONTENT)
+        .commands(prefix)
+        .slash_commands(slash)
+        .on_event(|event| match event {
+            Event::MessageCreate(message) => {
+                println!("{}: {}", message.author.user().name, message.content);
+            }
+            Event::Ready(ready) => {
+                println!("Connected as {}", ready.user.name);
+            }
+            _ => {}
+        })
+        .build()?;
+
+    bot.run_auto()?;
+    Ok(())
 }
 ```
 
-Learn more in the **[BotBuilder & Lifecycle Guide](https://discord-rust.netlify.app/#bot-builder)** or visit the **[Live Documentation](https://discord-rust.netlify.app/)**.
+`run_auto` blocks the calling thread and installs a REST client automatically.
+Use `start_auto` to run it in the background and receive a `BotHandle`.
+
+Read the [Quickstart](content/quickstart.md) for the Developer Portal setup, or
+[BotBuilder & Lifecycle](content/bot-builder.md) for hooks, worker dispatch and
+shutdown.
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+MIT

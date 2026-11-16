@@ -6,37 +6,39 @@ const DOCS_CATALOG = [
   {
     category: "Getting Started",
     items: [
-      { id: "intro", title: "Introduction & Philosophy", file: "content/intro.md" },
-      { id: "quickstart", title: "Step-by-Step Quickstart", file: "content/quickstart.md" },
+      { id: "intro", title: "Introduction", file: "content/intro.md" },
+      { id: "quickstart", title: "Quickstart", file: "content/quickstart.md" },
       { id: "bot-builder", title: "BotBuilder & Lifecycle", file: "content/bot-builder.md" }
     ]
   },
   {
     category: "Core Architecture",
     items: [
-      { id: "gateway", title: "Gateway & Event Dispatcher", file: "content/gateway.md" },
-      { id: "rest-api", title: "REST API Client & Limits", file: "content/rest-api.md" },
-      { id: "cache", title: "State Cache & Edit Tracking", file: "content/cache.md" },
-      { id: "sharding", title: "Multi-Shard Auto Scaling", file: "content/sharding.md" },
-      { id: "thread-pool", title: "Thread Pool & Pooled Dispatch", file: "content/thread-pool.md" }
+      { id: "gateway", title: "Gateway & Event Dispatch", file: "content/gateway.md" },
+      { id: "rest-api", title: "REST API Client", file: "content/rest-api.md" },
+      { id: "tls", title: "Transport & TLS", file: "content/tls.md" },
+      { id: "cache", title: "State Cache", file: "content/cache.md" },
+      { id: "sharding", title: "Sharding", file: "content/sharding.md" },
+      { id: "thread-pool", title: "Thread Pool & Dispatch", file: "content/thread-pool.md" }
     ]
   },
   {
     category: "Features & Components",
     items: [
-      { id: "commands", title: "Slash Commands & Options", file: "content/commands.md" },
-      { id: "macros", title: "Proc Macros & #[command]", file: "content/macros.md" },
-      { id: "ui-components", title: "UI Components & Paginator", file: "content/ui-components.md" },
-      { id: "voice", title: "Voice & FFmpeg Streaming", file: "content/voice.md" },
-      { id: "webhooks", title: "Webhooks Execution", file: "content/webhooks.md" },
-      { id: "models", title: "Domain Models & Assets", file: "content/models.md" },
-      { id: "logging-errors", title: "Logging & Error Handling", file: "content/logging-errors.md" }
+      { id: "commands", title: "Commands & Interactions", file: "content/commands.md" },
+      { id: "macros", title: "Proc Macros", file: "content/macros.md" },
+      { id: "ui-components", title: "UI Components", file: "content/ui-components.md" },
+      { id: "models", title: "Models & Assets", file: "content/models.md" },
+      { id: "logging-errors", title: "Errors & Logging", file: "content/logging-errors.md" },
+      { id: "webhooks", title: "Webhooks", file: "content/webhooks.md" },
+      { id: "voice", title: "Voice & FFmpeg", file: "content/voice.md" }
     ]
   }
 ];
 
 const cache = new Map();
 let currentDocId = null;
+let pendingAnchor = null;
 
 // ---------------------------------------------------------------------------
 // Syntax Highlighting & Marked Parser Configuration (marked v15+)
@@ -172,12 +174,43 @@ async function loadDocument(docId) {
     }
 
     // Process GitHub style callout alerts: > [!NOTE], > [!TIP], > [!WARNING]
-    markdown = markdown.replace(/^>\s*\[!(NOTE|INFO)\]\s*(.*)$/gim, '<div class="alert alert-note"><strong>Note:</strong> $2');
-    markdown = markdown.replace(/^>\s*\[!(TIP|SUCCESS)\]\s*(.*)$/gim, '<div class="alert alert-tip"><strong>Tip:</strong> $2');
-    markdown = markdown.replace(/^>\s*\[!(WARNING|CAUTION|IMPORTANT)\]\s*(.*)$/gim, '<div class="alert alert-warning"><strong>Warning:</strong> $2');
+    markdown = markdown.replace(/^(?:>.*(?:\n|$))+/gm, (block) => {
+      const lines = block.trimEnd().split('\n');
+      const header = lines[0].match(/^>\s*\[!(NOTE|INFO|TIP|SUCCESS|WARNING|CAUTION|IMPORTANT)\]\s*(.*)$/i);
+      if (!header) return block;
+
+      const kind = header[1].toUpperCase();
+      const classes = {
+        NOTE: ['note', 'Note'],
+        INFO: ['note', 'Note'],
+        TIP: ['tip', 'Tip'],
+        SUCCESS: ['tip', 'Tip'],
+        WARNING: ['warning', 'Warning'],
+        CAUTION: ['warning', 'Warning'],
+        IMPORTANT: ['warning', 'Important']
+      };
+      const [style, label] = classes[kind];
+
+      const body = [header[2], ...lines.slice(1).map(line => line.replace(/^>\s?/, ''))]
+        .join('\n')
+        .trim();
+      return `<div class="alert alert-${style}"><strong>${label}:</strong> ${marked.parseInline(body)}</div>\n`;
+    });
 
     const html = marked.parse(markdown);
     contentEl.innerHTML = html;
+
+    // Keep relative Markdown links inside the wiki instead of navigating away.
+    contentEl.querySelectorAll('a[href]').forEach(link => {
+      const href = link.getAttribute('href');
+      const match = href && href.match(/^(?:\.\/)?(?:content\/)?([a-z0-9-]+)\.md(#.*)?$/i);
+      if (!match) return;
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        pendingAnchor = match[2] ? match[2].slice(1) : null;
+        showWiki(match[1]);
+      });
+    });
 
     // Highlight any unhighlighted code blocks in DOM
     if (typeof hljs !== 'undefined') {
@@ -197,8 +230,16 @@ async function loadDocument(docId) {
     // Build Table of Contents
     buildTableOfContents(contentEl);
 
-    // Scroll to top of reading pane
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (pendingAnchor) {
+      const target = document.getElementById(pendingAnchor);
+      pendingAnchor = null;
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth' });
+      }
+    } else {
+      // Scroll to top of reading pane
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
     window.location.hash = docId;
   } catch (err) {
     contentEl.innerHTML = `<h1>Error Loading Document</h1><p>Failed to load <code>${item.file}</code>: ${err.message}</p>`;
