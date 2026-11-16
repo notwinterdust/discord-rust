@@ -98,6 +98,8 @@ jobs:
             discord-rust-event
             discord-rust-log
             discord-rust-voice
+            discord-rust-macros
+            discord-rust-commands
             discord-rust-webhook
             discord-rust
           )
