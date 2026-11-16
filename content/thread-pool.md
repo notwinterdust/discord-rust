@@ -74,7 +74,9 @@ pool.shutdown(); // signals all workers to drain and exit
 // Drop also calls shutdown automatically
 ```
 
-Workers finish their current job before exiting. No task is silently dropped — the queue drains cleanly before threads join.
+Workers finish the queue before exiting: `shutdown` accepts no new jobs, drains
+queued work, then joins every worker. A job submitted *after* shutdown begins is
+ignored silently, so call `shutdown` only once producers have stopped.
 
 ---
 

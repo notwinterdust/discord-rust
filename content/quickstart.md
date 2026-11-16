@@ -1,124 +1,122 @@
-# Step-by-Step Quickstart
+# Quickstart
 
-This tutorial will guide you through building and running your very first Discord bot in Rust in **less than 5 minutes**.
+This guide builds a bot that:
+
+- connects to Discord over TLS,
+- logs incoming messages,
+- answers a prefix command (`!ping`),
+- registers a slash command (`/ping`).
+
+The example targets the default feature set, which includes automatic TLS.
 
 ---
 
-## Step 1: Create a Discord Application & Bot
+## 1. Create the application
 
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Click **New Application** in the top-right corner. Give your bot a name (e.g. `RustaceanBot`) and confirm.
-3. In the left sidebar, click **Bot**.
-4. Click **Reset Token** (or **Copy Token**) to generate your bot token. Keep this token safe and never share it publicly!
-5. Scroll down to **Privileged Gateway Intents** and enable:
-   - **Message Content Intent** (required if your bot reads standard message text).
-   - **Server Members Intent** (if your bot tracks guild members).
-6. Invite the bot to your test server:
-   - In the left sidebar, go to **OAuth2** $\to$ **URL Generator**.
-   - Check `bot` and `applications.commands`.
-   - In the permissions list below, check `Send Messages` and `Read Message History`.
-   - Copy the generated URL at the bottom and paste it into your browser to invite the bot.
+2. Create an application and open its **Bot** page.
+3. Copy the bot token. Treat it like a password.
+4. Enable **Message Content Intent** if the bot reads message text.
+5. Invite the bot with the `bot` and `applications.commands` scopes.
 
 ---
 
-## Step 2: Initialize Your Rust Project
-
-Create a new Rust binary project using Cargo:
+## 2. Create the project
 
 ```bash
 cargo new my_discord_bot
 cd my_discord_bot
 ```
 
-Add `discord-rust` to your `Cargo.toml`:
+Add the library:
 
 ```toml
 [dependencies]
 discord-rust = "0.1.1"
 ```
 
+The `tls` feature is enabled by default. To keep the runtime dependency graph
+standard-library only, see [Transport & TLS](tls.md).
+
 ---
 
-## Step 3: Write Your First Ping-Pong Bot
+## 3. Write the bot
 
-Open `src/main.rs` and replace its contents with the following:
+Replace `src/main.rs` with:
 
 ```rust
-use discord_rust::{BotBuilder, Event, Intents};
+use discord_rust::{
+    BotBuilder, CommandRegistry, Context, Event, Intents, SlashCommandRegistry,
+};
 
-fn main() {
-    // Read your token from an environment variable for safety
-    let token = std::env::var("DISCORD_TOKEN")
-        .expect("Please set the DISCORD_TOKEN environment variable!");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let token = std::env::var("DISCORD_TOKEN")?;
 
-    println!("Starting bot with discord-rust...");
+    // Prefix commands: !ping
+    let mut prefix = CommandRegistry::new("!");
+    prefix
+        .add_command("ping", |context: &Context| context.respond("Pong!"))
+        .expect("register !ping");
 
-    // 1. Build your bot using the fluent BotBuilder API
-    let mut bot = BotBuilder::new()
+    // Slash commands: /ping
+    let mut slash = SlashCommandRegistry::new();
+    slash
+        .add("ping", "Check that the bot is online", |context: &Context| {
+            context.respond("Pong!")
+        })
+        .expect("register /ping");
+
+    let bot = BotBuilder::new()
         .token(token)
-        .intents(Intents::default_intents() | Intents::MESSAGE_CONTENT)
-        .on_event(|event| {
-            // 2. Pattern match on typed Discord Gateway events
-            match event {
-                Event::Ready(ready) => {
-                    println!("Logged in as: {} (ID: {})", ready.user.username, ready.user.id);
-                    println!("Connected to {} guilds.", ready.guilds.len());
-                }
-
-                Event::MessageCreate(msg) => {
-                    // Ignore messages sent by bots to avoid infinite loops
-                    if msg.author.bot {
-                        return;
-                    }
-
-                    println!("[#{}] {}: {}", msg.channel_id, msg.author.username, msg.content);
-
-                    // Check for ping command
-                    if msg.content.trim() == "!ping" {
-                        println!("Replying pong to message {}", msg.id);
-                        // In a real bot, dispatch a REST message response here!
-                    }
-                }
-
-                _ => {}
+        .intents_flags(Intents::default() | Intents::MESSAGE_CONTENT)
+        .commands(prefix)
+        .slash_commands(slash)
+        .on_event_name("MESSAGE_CREATE", |event| {
+            if let Event::MessageCreate(message) = event {
+                println!(
+                    "{}: {}",
+                    message.author.user().name,
+                    message.content
+                );
             }
         })
-        .build()
-        .expect("Failed to initialize bot!");
+        .on_event_name("READY", |event| {
+            if let Event::Ready(ready) = event {
+                println!("Connected as {}", ready.user.name);
+            }
+        })
+        .build()?;
 
-    // 3. Start background shard runners and wait
-    println!("Bot initialized successfully. Launching shards...");
-    let handles = bot.start_shards();
-    for handle in handles {
-        let _ = handle.join();
-    }
+    // Connects to wss:// with the bundled web PKI roots and installs a REST
+    // client for command responses.
+    bot.run_auto()?;
+    Ok(())
 }
 ```
 
+> [!NOTE]
+> `run_auto` blocks the current thread. Use `start_auto` when the gateway should
+> run in the background; it returns a `BotHandle` that can be shut down later.
+
 ---
 
-## Step 4: Run the Bot!
-
-Set your bot token and run the project:
+## 4. Run it
 
 ```bash
-export DISCORD_TOKEN="your_token_here"
+export DISCORD_TOKEN="your token"
 cargo run
 ```
 
-You will see:
-```text
-Starting bot with discord-rust...
-Bot initialized successfully. Launching shards...
-Logged in as: RustaceanBot (ID: 1234567890)
-Connected to 1 guilds.
-```
-
-Go to your Discord server and type `!ping` in any channel where the bot has access — you will immediately see the incoming message event logged to your terminal!
+Type `!ping` or use `/ping` in a channel where the bot can send messages. Both
+handlers call `Context::respond`, which routes to the interaction callback for
+slash commands and to the REST responder for prefix commands.
 
 ---
 
-## Next Steps
-- Learn how to configure hooks and error handlers in [BotBuilder & Lifecycle](#bot-builder).
-- Explore the [Gateway & Event Dispatcher](#gateway) to synchronously wait for user input with `EventWaiter`.
-- Register rich slash commands with [Slash Commands & Options](#commands).
+## Next steps
+
+- [BotBuilder & Lifecycle](bot-builder.md) covers hooks, worker dispatch and
+  graceful shutdown.
+- [Commands & Interactions](commands.md) covers options, caches and interaction
+  responses.
+- [Transport & TLS](tls.md) explains custom transports and `--no-default-features`.
