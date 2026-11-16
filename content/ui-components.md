@@ -2,13 +2,15 @@
 
 Message components enable rich, interactive interfaces directly inside Discord chats using **Buttons**, **Select Menus**, **Text Inputs**, **Action Rows**, and multi-page **Paginators**.
 
-`discord-rust` validates component constraints at compile-time and runtime.
+`discord-rust` validates component limits when components are added: an
+`ActionRow` holds at most 5 buttons or one select/text input, a select holds at
+most 25 options, and a modal holds at most 5 rows.
 
 ---
 
 ## Action Rows
 
-Every interactive component must reside inside an [`ActionRow`](#). A message can contain up to **5 Action Rows**, and each row can hold up to 5 buttons or 1 select menu.
+Every interactive component must reside inside an `ActionRow`. A message can contain up to **5 Action Rows**, and each row can hold up to 5 buttons or 1 select menu.
 
 ```rust
 use discord_rust::app::ui::{ActionRow, Button};
@@ -122,4 +124,7 @@ let body_input = TextInput::paragraph("feedback_body", "Your Feedback")
 ```
 
 > [!NOTE]
-> Modals are triggered as responses to incoming button clicks or slash command interactions via `InteractionResponse::modal(...)`.
+> Modals are returned as interaction responses of type `Modal`.
+> `models::ModalResponseData` models the response payload, while
+> `app::Modal` is a convenience builder for the same fields. Both are sent in
+> response to a button or slash-command interaction before any other response.

@@ -1,83 +1,120 @@
-# Webhooks Execution
+# Webhooks
 
-Webhooks allow applications to send messages to a Discord channel **without needing a bot account or connecting to the gateway WebSocket**.
-
-They are ideal for CI/CD notification bots, GitHub commit feeds, server monitoring alerts, and logging dispatchers.
+Webhooks post messages to a channel without a bot account or gateway
+connection. The `webhook` crate is deliberately small: it builds endpoint paths,
+message payloads and multipart bodies, leaving transport and retries to your HTTP
+client.
 
 ---
 
-## Standalone Webhook Client
+## Endpoint paths
 
-The [`WebhookClient`](#) is lightweight and operates completely independently of the gateway:
+A webhook is identified by an ID and token:
 
 ```rust
-use discord_rust::webhook::{WebhookClient, WebhookMessage};
+use discord_rust::webhook::Webhook;
 
-// Initialize with a webhook ID and secret token
-let webhook = WebhookClient::new(
-    123456789012345678_u64,
-    "your_webhook_token_here"
-);
+let webhook = Webhook::new(123456789012345678, "your_webhook_token");
 
-// Or parse from a full Discord webhook URL
-let webhook = WebhookClient::from_url(
-    "https://discord.com/api/webhooks/123456789012345678/your_token_here"
-).expect("Valid webhook URL");
+println!("{}", webhook.execute_path());
+// webhooks/123456789012345678/your_webhook_token
 ```
 
----
-
-## Sending Messages & Embeds
-
-You can override the webhook's default username, avatar, and send rich content:
+Paths are relative to `https://discord.com/api/v10/`. Pass them to
+`HttpClient`/`DiscordApi` or your own transport:
 
 ```rust
-use discord_rust::webhook::WebhookMessage;
+let request = api.client().post(webhook.execute_path());
+```
+
+| Method | Path suffix |
+|---|---|
+| `execute_path()` | Base execute endpoint |
+| `edit_message_path(id)` | `/messages/{id}` |
+| `delete_message_path(id)` | `/messages/{id}` |
+| `fetch_message_path(id)` | `/messages/{id}` |
+| `edit_path()` | Base endpoint (edit the webhook) |
+| `delete_path()` | Base endpoint (delete the webhook) |
+
+`SyncWebhook` is an alias for `Webhook`.
+
+---
+
+## Messages
+
+`WebhookMessage` currently supports content and a `silent` flag:
+
+```rust
+use discord_rust::webhook::{Webhook, WebhookMessage};
+
+let webhook = Webhook::new(id, token);
 
 let message = WebhookMessage::new()
-    .with_content("Build #42 passed successfully!")
-    .with_username("CI Notifier")
-    .with_avatar_url("https://cdn.discordapp.com/emojis/12345.png")
-    .silent(true); // Suppresses notification pings
+    .with_content("Build #42 passed")
+    .silent(true);
 
-// Serializes directly to a Discord-compliant JSON payload
-let payload_json = webhook.message(message);
+let body = webhook.message(message);
+// {"content":"Build #42 passed","silent":true}
 ```
+
+`message` returns the crate's compact JSON representation. It is not a full
+Discord message object: embeds, usernames, avatars, files and components are not
+encoded by `WebhookMessage`. Build those as `data::Value` and post them with the
+REST client when you need the complete payload. Discord's execute endpoint uses
+`flags: 4096` (suppress notifications) for silent delivery; map the `silent`
+field to that flag, or send a raw payload, if the webhook must honor it.
 
 ---
 
-## Editing & Deleting Webhook Messages
+## Multipart uploads
+
+`Multipart` assembles a `multipart/form-data` body without external
+dependencies:
 
 ```rust
-let message_id = 9876543210_u64;
+use discord_rust::webhook::Multipart;
 
-// Endpoint path for modifying an already sent webhook message
-let edit_path = webhook.edit_message_path(message_id);
-println!("PATCH URL: {}", edit_path);
-
-// Endpoint path for deleting
-let delete_path = webhook.delete_message_path(message_id);
-println!("DELETE URL: {}", delete_path);
-```
-
----
-
-## Multipart File Uploads
-
-To upload binary log files or image attachments through a webhook, use multipart form assembly:
-
-```rust
-use discord_rust::webhook::build_multipart_payload;
-
-let json_payload = r#"{"content": "Here is the error log"}"#;
-let file_bytes = b"2026-11-12 20:00:00 [ERROR] Out of memory";
-
-let (content_type, body_bytes) = build_multipart_payload(
-    json_payload,
-    "crash_log.txt",
-    file_bytes
+let mut form = Multipart::new("discord-rust-boundary");
+form.field("payload_json", r#"{"content":"Crash log attached"}"#);
+form.file(
+    "files[0]",
+    "crash.log",
+    "text/plain",
+    b"2026-11-12 20:00:00 [ERROR] out of memory",
 );
 
-println!("Header: Content-Type: {}", content_type);
-// Transmit body_bytes with your HTTP transport!
+let (content_type, body) = form.finish();
+println!("{content_type}");
+// multipart/form-data; boundary=discord-rust-boundary
 ```
+
+Send `body` with a `Content-Type` header set to `content_type`. The caller owns
+the HTTP request; `Multipart` only encodes it.
+
+---
+
+## Execution example
+
+```rust
+use discord_rust::clients::{DiscordApi, HttpClient, HttpsTransport};
+use discord_rust::data;
+use discord_rust::webhook::{Webhook, WebhookMessage};
+
+let api = DiscordApi::new(HttpClient::new("unused", HttpsTransport::discord()));
+let webhook = Webhook::new(id, token);
+
+let request = api
+    .client()
+    .post(webhook.execute_path())
+    .with_header("Content-Type", "application/json");
+
+let response = api
+    .client()
+    .execute_json(request, &data::from_str(&webhook.message(WebhookMessage::new().with_content("hello")))?)?;
+
+println!("status: {}", response.status);
+```
+
+Webhook execution does not require bot authentication; the token in the path is
+the credential. The placeholder `HttpClient` token is sent as an
+`Authorization` header, which Discord ignores for webhook routes.

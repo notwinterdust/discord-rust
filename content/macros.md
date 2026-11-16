@@ -9,6 +9,7 @@
 Annotate any plain Rust function with `#[command]` to automatically generate a `CommandDefinition` constructor for it. The macro inspects the function signature and emits typed argument extraction code.
 
 ```rust
+use discord_rust::commands;
 use discord_rust::commands::{command, CommandRegistry, Context};
 
 #[command(description = "Add two numbers together", aliases = ["plus", "sum"])]
@@ -29,6 +30,10 @@ fn main() {
 }
 ```
 
+The generated constructor refers to `commands::CommandDefinition`, so the
+`commands` module itself must be in scope (as shown above) when the macro is used
+from a crate that only depends on `discord-rust`.
+
 The macro generates a free function `add_command()` that returns a `CommandDefinition` containing:
 - The command name (`"add"`)
 - All aliases (`["plus", "sum"]`)
@@ -41,6 +46,7 @@ The macro generates a free function `add_command()` that returns a `CommandDefin
 
 | Parameter | Type | Description |
 |---|---|---|
+| `name = "..."` | `&str` | Overrides the command name (defaults to the function name) |
 | `description = "..."` | `&str` | Human-readable description for help output |
 | `aliases = ["...", "..."]` | array of `&str` | Alternative command names |
 
@@ -55,7 +61,10 @@ fn ping(ctx: &Context) {
 
 ## Typed Argument Extraction
 
-The macro generates argument extraction using `ctx.arg::<T>(index)` for each non-`Context` parameter. If an argument is missing or fails to parse, the handler returns silently without panicking.
+The macro generates argument extraction using `ctx.arg::<T>(index)` for each
+non-`Context` parameter. A missing or unparsable argument returns a
+`CommandError` from the handler, which the registry reports through its error
+handler; the generated function does not panic.
 
 ```rust
 #[command(description = "Set a slowmode delay in seconds")]
@@ -94,6 +103,7 @@ registry.register(
 `#[command]`-generated definitions compose naturally with `CommandGroup` for subcommand hierarchies:
 
 ```rust
+use discord_rust::commands;
 use discord_rust::commands::{command, CommandGroup, CommandRegistry, Context};
 
 #[command(description = "Show server config")]

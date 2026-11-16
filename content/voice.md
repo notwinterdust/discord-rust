@@ -1,6 +1,6 @@
 # Voice Gateway, Audio Pipelines & FFmpeg Streaming
 
-`discord-rust` includes a dedicated [`voice`](#) crate for communicating with Discord's real-time voice infrastructure, and a built-in `FfmpegSource` for streaming audio from files or URLs.
+`discord-rust` includes a dedicated `voice` crate for communicating with Discord's real-time voice infrastructure, and a built-in `FfmpegSource` for streaming audio from files or URLs.
 
 ---
 
@@ -42,10 +42,10 @@ Each call to `next_frame()` returns exactly `1920` bytes (20 ms of stereo s16le 
 ### From a File
 
 ```rust
-use discord_rust::voice::FfmpegSource;
+use discord_rust::voice::{AudioSource, FfmpegSource};
 
 let mut source = FfmpegSource::from_file("audio/song.mp3")
-    .expect("ffmpeg not found or file missing");
+    .expect("could not spawn ffmpeg");
 
 while let Some(frame) = source.next_frame() {
     // frame is Vec<u8> of exactly 1920 bytes (20ms @ 48kHz stereo s16le)
@@ -56,8 +56,10 @@ while let Some(frame) = source.next_frame() {
 ### From a URL
 
 ```rust
+use discord_rust::voice::{AudioSource, FfmpegSource};
+
 let mut source = FfmpegSource::from_url("https://example.com/stream.mp3")
-    .expect("ffmpeg spawn failed");
+    .expect("could not spawn ffmpeg");
 
 // Streams live from the HTTP URL with reconnection flags set automatically
 while let Some(frame) = source.next_frame() {
@@ -69,7 +71,7 @@ while let Some(frame) = source.next_frame() {
 
 ```rust
 use std::process::{Command, Stdio};
-use discord_rust::voice::FfmpegSource;
+use discord_rust::voice::{AudioSource, FfmpegSource};
 
 let child = Command::new("ffmpeg")
     .args(["-re", "-i", "playlist.m3u8",
@@ -113,8 +115,7 @@ while let Some(frame) = buf.next_frame() {
 Wrap any `AudioSource` with `VolumeSource` for linear gain control:
 
 ```rust
-use discord_rust::voice::VolumeSource;
-use discord_rust::voice::FfmpegSource;
+use discord_rust::voice::{AudioSource, FfmpegSource, VolumeSource};
 
 let raw = FfmpegSource::from_file("music.ogg").unwrap();
 let mut attenuated = VolumeSource::new(raw, 0.5); // 50% volume
@@ -130,7 +131,7 @@ while let Some(frame) = attenuated.next_frame() {
 
 Discord requires all voice packets to be encrypted (e.g. `xsalsa20_poly1305` or `aead_aes256_gcm_rtpsize`).
 
-`discord-rust` defines the [`VoiceEncrypt`](#) trait:
+`discord-rust` defines the `VoiceEncrypt` trait:
 
 ```rust
 pub trait VoiceEncrypt {
@@ -139,7 +140,12 @@ pub trait VoiceEncrypt {
 }
 ```
 
-Plug in your preferred cryptographic backend with zero-copy slicing.
+The crate defines the trait but does not ship an encryption backend. Implement
+it with the library of your choice and pass it to your voice pipeline.
+
+The same applies to audio encoding: `AudioCodec` describes PCM-to-Opus and
+Opus-to-PCM conversion, and `FfmpegSource` produces raw PCM. You supply the
+codec that turns those frames into the payload of a `VoicePacket`.
 
 ---
 
