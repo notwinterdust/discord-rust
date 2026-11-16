@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use enums::Permissions;
+
 /// A simple bounded cache keyed by Discord IDs.
 #[derive(Clone, Debug)]
 pub struct Cache<T> {
@@ -42,6 +44,11 @@ impl<T> Cache<T> {
         self.values.get(&id)
     }
 
+    /// Returns a mutable reference to a cached value.
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut T> {
+        self.values.get_mut(&id)
+    }
+
     /// Removes a cached value.
     pub fn remove(&mut self, id: u64) -> Option<T> {
         self.values.remove(&id)
@@ -60,6 +67,14 @@ impl<T> Cache<T> {
         for id in ids {
             self.values.remove(&id);
         }
+    }
+
+    /// Removes every entry for which `keep` returns `false`.
+    pub fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(u64, &T) -> bool,
+    {
+        self.values.retain(|id, value| keep(*id, value));
     }
 
     /// Returns the current number of entries.
@@ -109,6 +124,11 @@ impl MemberCache {
     #[must_use]
     pub fn len(&self) -> usize {
         self.members.len()
+    }
+
+    /// Returns an iterator over the cached members.
+    pub fn values(&self) -> impl Iterator<Item = &models::Member> {
+        self.members.values()
     }
 
     /// Returns `true` when no members are cached.
@@ -225,6 +245,8 @@ pub struct CacheConfig {
     pub messages: usize,
     /// Maximum number of presences to cache.
     pub presences: usize,
+    /// Maximum number of webhooks to cache.
+    pub webhooks: usize,
     /// Maximum number of message edit responses to track.
     pub message_edits: usize,
 }
@@ -238,6 +260,7 @@ impl Default for CacheConfig {
             users: 10_000,
             messages: 1_000,
             presences: 10_000,
+            webhooks: 1_000,
             message_edits: 1_000,
         }
     }
@@ -261,6 +284,8 @@ pub struct ClientCache {
     pub messages: Cache<models::Message>,
     /// Cached presences, keyed by user ID.
     pub presences: Cache<models::PresenceUpdate>,
+    /// Cached webhooks, keyed by webhook ID.
+    pub webhooks: Cache<models::Webhook>,
     /// Per-guild member caches, keyed by guild ID.
     pub members: HashMap<u64, MemberCache>,
     /// Tracked command invocation and bot response message pairs.
@@ -278,6 +303,7 @@ impl ClientCache {
             users: Cache::new(config.users),
             messages: Cache::new(config.messages),
             presences: Cache::new(config.presences),
+            webhooks: Cache::new(config.webhooks),
             members: HashMap::new(),
             edit_tracker: MessageEditTracker::new(config.message_edits),
         }
@@ -355,10 +381,25 @@ impl ClientCache {
             // ---- Roles -------------------------------------------------
             models::Event::GuildRoleCreate(ev) | models::Event::GuildRoleUpdate(ev) => {
                 self.roles.insert(ev.role.id.get(), ev.role.clone());
+                if let Some(guild) = self.guilds.get_mut(ev.guild_id.get()) {
+                    if let Some(existing) =
+                        guild.roles.iter_mut().find(|role| role.id == ev.role.id)
+                    {
+                        *existing = ev.role.clone();
+                    } else {
+                        guild.roles.push(ev.role.clone());
+                        guild
+                            .roles
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    }
+                }
                 true
             }
             models::Event::GuildRoleDelete(ev) => {
                 self.roles.remove(ev.role_id.get());
+                if let Some(guild) = self.guilds.get_mut(ev.guild_id.get()) {
+                    guild.roles.retain(|role| role.id != ev.role_id);
+                }
                 true
             }
 
@@ -386,6 +427,14 @@ impl ClientCache {
             models::Event::PresenceUpdate(presence) => {
                 self.presences
                     .insert(presence.user_id.get(), presence.clone());
+                true
+            }
+
+            // ---- Webhooks ----------------------------------------------
+            models::Event::WebhooksUpdate(update) => {
+                let channel_id = update.channel_id.get();
+                self.webhooks
+                    .retain(|_, webhook| webhook.channel_id.map(|id| id.get()) != Some(channel_id));
                 true
             }
 
@@ -455,10 +504,159 @@ impl ClientCache {
         )
     }
 
+    /// Resolves the permissions a member has in a guild channel.
+    ///
+    /// Returns `None` when the guild, channel, or member is not cached. The
+    /// guild owner and administrators receive every permission.
+    #[must_use]
+    pub fn permissions_for(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        channel_id: u64,
+    ) -> Option<Permissions> {
+        let guild = self.guilds.get(guild_id)?;
+        let channel = self.channels.get(channel_id)?;
+        let member = self.member(guild_id, user_id).or_else(|| {
+            guild
+                .members()
+                .iter()
+                .find(|member| member.user.id.get() == user_id)
+        })?;
+        Some(channel.permissions_for(guild, member))
+    }
+
     /// Returns the presence for a user, if cached.
     #[must_use]
     pub fn presence(&self, user_id: u64) -> Option<&models::PresenceUpdate> {
         self.presences.get(user_id)
+    }
+
+    // ---- resource lookup helpers ----------------------------------------
+
+    /// Returns a cached guild.
+    #[must_use]
+    pub fn guild(&self, guild_id: u64) -> Option<&models::Guild> {
+        self.guilds.get(guild_id)
+    }
+
+    /// Returns a cached channel, whether guild channel or thread.
+    #[must_use]
+    pub fn channel(&self, channel_id: u64) -> Option<&models::GuildChannel> {
+        self.channels.get(channel_id)
+    }
+
+    /// Returns a cached user.
+    #[must_use]
+    pub fn user(&self, user_id: u64) -> Option<&models::User> {
+        self.users.get(user_id)
+    }
+
+    /// Returns a cached role.
+    #[must_use]
+    pub fn role(&self, role_id: u64) -> Option<&models::Role> {
+        self.roles.get(role_id)
+    }
+
+    /// Returns a cached message.
+    #[must_use]
+    pub fn message(&self, message_id: u64) -> Option<&models::Message> {
+        self.messages.get(message_id)
+    }
+
+    /// Returns a cached webhook.
+    #[must_use]
+    pub fn webhook(&self, webhook_id: u64) -> Option<&models::Webhook> {
+        self.webhooks.get(webhook_id)
+    }
+
+    /// Returns a cached guild channel, excluding threads.
+    ///
+    /// Threads are cached alongside guild channels; use [`ClientCache::channel`]
+    /// when either is acceptable.
+    #[must_use]
+    pub fn guild_channel(&self, channel_id: u64) -> Option<&models::GuildChannel> {
+        self.channels
+            .get(channel_id)
+            .filter(|channel| !channel.is_thread())
+    }
+
+    /// Returns a cached member, checking the per-guild cache before the guild
+    /// snapshot.
+    #[must_use]
+    pub fn guild_member(&self, guild_id: u64, user_id: u64) -> Option<&models::Member> {
+        self.member(guild_id, user_id).or_else(|| {
+            self.guilds
+                .get(guild_id)?
+                .members()
+                .iter()
+                .find(|member| member.user.id.get() == user_id)
+        })
+    }
+
+    /// Finds a channel in a guild by its exact name.
+    ///
+    /// Names are matched case-sensitively, matching Discord's uniqueness rules
+    /// within a guild.
+    #[must_use]
+    pub fn channel_by_name(&self, guild_id: u64, name: &str) -> Option<&models::GuildChannel> {
+        self.channels
+            .values()
+            .find(|channel| channel.guild_id.get() == guild_id && channel.name == name)
+    }
+
+    /// Finds a member in a guild by username or display name.
+    ///
+    /// The username and global display name are compared case-insensitively.
+    /// Guild nicknames are compared as well but do not take precedence when
+    /// several members match.
+    #[must_use]
+    pub fn member_by_name(&self, guild_id: u64, name: &str) -> Option<&models::Member> {
+        self.members.get(&guild_id)?.values().find(|member| {
+            member.name().eq_ignore_ascii_case(name)
+                || member.display_name().eq_ignore_ascii_case(name)
+                || member
+                    .user
+                    .global_name
+                    .as_deref()
+                    .is_some_and(|global| global.eq_ignore_ascii_case(name))
+        })
+    }
+
+    // ---- webhook helpers -------------------------------------------------
+
+    /// Stores a webhook in the cache.
+    pub fn cache_webhook(&mut self, webhook: models::Webhook) {
+        self.webhooks.insert(webhook.id.get(), webhook);
+    }
+
+    /// Stores several webhooks in the cache.
+    pub fn cache_webhooks<I>(&mut self, webhooks: I)
+    where
+        I: IntoIterator<Item = models::Webhook>,
+    {
+        for webhook in webhooks {
+            self.cache_webhook(webhook);
+        }
+    }
+
+    /// Removes a webhook from the cache.
+    pub fn remove_webhook(&mut self, webhook_id: u64) -> Option<models::Webhook> {
+        self.webhooks.remove(webhook_id)
+    }
+
+    /// Returns every cached webhook that posts to a channel.
+    pub fn webhooks_for_channel(&self, channel_id: u64) -> impl Iterator<Item = &models::Webhook> {
+        self.webhooks
+            .values()
+            .filter(move |webhook| webhook.channel_id.map(|id| id.get()) == Some(channel_id))
+    }
+
+    /// Returns every cached webhook that belongs to a guild.
+    pub fn webhooks_for_guild(&self, guild_id: u64) -> impl Iterator<Item = &models::Webhook> {
+        self.webhooks
+            .values()
+            .filter(move |webhook| webhook.guild_id.map(|id| id.get()) == Some(guild_id))
     }
 
     // ---- private helpers -----------------------------------------------
@@ -480,6 +678,58 @@ impl ClientCache {
     }
 }
 
+/// A shared, read-only view of a [`ClientCache`] for command contexts.
+///
+/// The bot runtime attaches this wrapper to every command context so handlers
+/// can look up guilds, channels, members and messages without locking the cache
+/// themselves.
+#[derive(Clone, Debug)]
+pub struct SharedCache {
+    inner: std::sync::Arc<std::sync::Mutex<ClientCache>>,
+}
+
+impl SharedCache {
+    /// Wraps a shared cache handle.
+    #[must_use]
+    pub const fn new(inner: std::sync::Arc<std::sync::Mutex<ClientCache>>) -> Self {
+        Self { inner }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&ClientCache) -> R) -> R {
+        let cache = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&cache)
+    }
+}
+
+impl commands::ContextCache for SharedCache {
+    fn guild(&self, guild_id: u64) -> Option<models::Guild> {
+        self.with(|cache| cache.guild(guild_id).cloned())
+    }
+
+    fn channel(&self, channel_id: u64) -> Option<models::GuildChannel> {
+        self.with(|cache| cache.channel(channel_id).cloned())
+    }
+
+    fn user(&self, user_id: u64) -> Option<models::User> {
+        self.with(|cache| cache.users.get(user_id).cloned())
+    }
+
+    fn member(&self, guild_id: u64, user_id: u64) -> Option<models::Member> {
+        self.with(|cache| cache.member(guild_id, user_id).cloned())
+    }
+
+    fn message(&self, message_id: u64) -> Option<models::Message> {
+        self.with(|cache| cache.messages.get(message_id).cloned())
+    }
+
+    fn permissions_for(&self, guild_id: u64, user_id: u64, channel_id: u64) -> Option<Permissions> {
+        self.with(|cache| cache.permissions_for(guild_id, user_id, channel_id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +742,7 @@ mod tests {
             users: 100,
             messages: 50,
             presences: 100,
+            webhooks: 50,
             message_edits: 50,
         })
     }
@@ -535,6 +786,17 @@ mod tests {
         assert_eq!(c.len(), 1);
         assert!(c.get(2).is_some());
         assert!(c.get(1).is_none());
+    }
+
+    #[test]
+    fn cache_retain_keeps_matching_entries() {
+        let mut c: Cache<u32> = Cache::new(10);
+        c.insert(1, 10);
+        c.insert(2, 20);
+        c.insert(3, 30);
+        c.retain(|id, value| id % 2 == 1 && *value >= 30);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c.get(3), Some(&30));
     }
 
     // ---- ClientCache event-driven tests --------------------------------
@@ -718,5 +980,128 @@ mod tests {
         let (mutated, _) = cache.update_tracked(&del_ev);
         assert!(mutated);
         assert_eq!(cache.edit_tracker.get_response(123), None);
+    }
+
+    #[test]
+    fn permissions_for_resolves_member_roles() {
+        let guild_id = 10_u64;
+        let user_id = 42_u64;
+        let channel_id = 7_u64;
+
+        let everyone = models::Role::new(guild_id, guild_id, "@everyone")
+            .with_permissions(Permissions::VIEW_CHANNEL);
+        let member_role = models::Role::new(guild_id, 20_u64, "member")
+            .with_permissions(Permissions::SEND_MESSAGES);
+
+        let user = models::User {
+            id: user_id.into(),
+            ..models::User::default()
+        };
+        let member = models::Member::new(user, guild_id).with_roles(vec![member_role.clone()]);
+        let channel =
+            models::GuildChannel::new(channel_id, guild_id, "general", enums::ChannelType::Text);
+
+        let mut guild = models::Guild::new(guild_id, "Guild");
+        guild.roles = vec![everyone, member_role.clone()];
+        guild.members = vec![member];
+        guild.channels = vec![channel];
+
+        let mut cache = make_cache();
+        assert!(cache.update(&models::Event::GuildCreate(guild)));
+
+        let permissions = cache
+            .permissions_for(guild_id, user_id, channel_id)
+            .expect("cached guild, channel and member");
+        assert!(permissions.contains(Permissions::VIEW_CHANNEL));
+        assert!(permissions.contains(Permissions::SEND_MESSAGES));
+        assert!(cache.permissions_for(guild_id, 99, channel_id).is_none());
+
+        let updated_role = member_role.with_permissions(Permissions::ADMINISTRATOR);
+        assert!(
+            cache.update(&models::Event::GuildRoleUpdate(models::RoleEvent {
+                guild_id: guild_id.into(),
+                role: updated_role,
+            }))
+        );
+        let permissions = cache
+            .permissions_for(guild_id, user_id, channel_id)
+            .expect("updated permissions");
+        assert!(permissions.contains(Permissions::ADMINISTRATOR));
+    }
+
+    #[test]
+    fn lookup_helpers_and_webhook_invalidation() {
+        let guild_id = 10_u64;
+        let channel_id = 7_u64;
+        let user_id = 42_u64;
+
+        let user = models::User::new(user_id, "Alice");
+        let member = models::Member::new(user, guild_id);
+        let channel =
+            models::GuildChannel::new(channel_id, guild_id, "general", enums::ChannelType::Text);
+        let guild = models::Guild::new(guild_id, "Guild")
+            .with_members(vec![member])
+            .with_channels(vec![channel]);
+
+        let mut cache = make_cache();
+        assert!(cache.update(&models::Event::GuildCreate(guild)));
+
+        assert_eq!(
+            cache.guild(guild_id).map(|guild| guild.name.as_str()),
+            Some("Guild")
+        );
+        assert_eq!(
+            cache
+                .channel(channel_id)
+                .map(|channel| channel.name.as_str()),
+            Some("general")
+        );
+        assert!(cache.guild_channel(channel_id).is_some());
+        assert_eq!(
+            cache.user(user_id).map(|user| user.name.as_str()),
+            Some("Alice")
+        );
+        assert_eq!(
+            cache
+                .channel_by_name(guild_id, "general")
+                .map(|channel| channel.id.get()),
+            Some(channel_id)
+        );
+        assert!(cache.channel_by_name(guild_id, "missing").is_none());
+        assert_eq!(
+            cache
+                .guild_member(guild_id, user_id)
+                .map(|member| member.name()),
+            Some("Alice")
+        );
+        assert_eq!(
+            cache
+                .member_by_name(guild_id, "alice")
+                .map(|member| member.user.id.get()),
+            Some(user_id)
+        );
+        assert!(cache.member_by_name(guild_id, "bob").is_none());
+
+        let mut webhook = models::Webhook::new(99_u64);
+        webhook.guild_id = Some(guild_id.into());
+        webhook.channel_id = Some(channel_id.into());
+        cache.cache_webhook(webhook);
+
+        let other = models::Webhook::new(100_u64);
+        cache.cache_webhooks([other]);
+
+        assert!(cache.webhook(99).is_some());
+        assert_eq!(cache.webhooks_for_channel(channel_id).count(), 1);
+        assert_eq!(cache.webhooks_for_guild(guild_id).count(), 1);
+
+        let event = guild_event("WEBHOOKS_UPDATE", r#"{"guild_id":"10","channel_id":"7"}"#);
+        assert!(cache.update(&event));
+        assert!(cache.webhook(99).is_none());
+        assert!(cache.webhook(100).is_some());
+        assert_eq!(
+            cache.remove_webhook(100).map(|webhook| webhook.id.get()),
+            Some(100)
+        );
+        assert!(cache.webhooks.is_empty());
     }
 }

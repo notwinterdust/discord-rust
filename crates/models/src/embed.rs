@@ -61,6 +61,26 @@ macro_rules! define_embed_media {
                 self
             }
 
+            /// Encodes the media as a Discord embed media object.
+            #[must_use]
+            pub fn to_value(&self) -> Value {
+                let mut object = Object::new();
+                object.insert("url", Value::from(self.url.as_str()));
+                if let Some(proxy_url) = &self.proxy_url {
+                    object.insert("proxy_url", Value::from(proxy_url.as_str()));
+                }
+                if let Some(height) = self.height {
+                    object.insert("height", Value::from(height));
+                }
+                if let Some(width) = self.width {
+                    object.insert("width", Value::from(width));
+                }
+                if self.flags.bits() != 0 {
+                    object.insert("flags", Value::from(self.flags.bits()));
+                }
+                Value::from(object)
+            }
+
             /// Decodes the media from a Discord embed media object.
             ///
             /// # Errors
@@ -148,6 +168,20 @@ impl EmbedFooter {
         self
     }
 
+    /// Encodes the footer as a Discord embed footer object.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut object = Object::new();
+        object.insert("text", Value::from(self.text.as_str()));
+        if let Some(icon_url) = &self.icon_url {
+            object.insert("icon_url", Value::from(icon_url.as_str()));
+        }
+        if let Some(proxy_icon_url) = &self.proxy_icon_url {
+            object.insert("proxy_icon_url", Value::from(proxy_icon_url.as_str()));
+        }
+        Value::from(object)
+    }
+
     /// Decodes a footer from a Discord embed footer object.
     ///
     /// # Errors
@@ -217,6 +251,23 @@ impl EmbedAuthor {
         self
     }
 
+    /// Encodes the author as a Discord embed author object.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut object = Object::new();
+        object.insert("name", Value::from(self.name.as_str()));
+        if let Some(url) = &self.url {
+            object.insert("url", Value::from(url.as_str()));
+        }
+        if let Some(icon_url) = &self.icon_url {
+            object.insert("icon_url", Value::from(icon_url.as_str()));
+        }
+        if let Some(proxy_icon_url) = &self.proxy_icon_url {
+            object.insert("proxy_icon_url", Value::from(proxy_icon_url.as_str()));
+        }
+        Value::from(object)
+    }
+
     /// Decodes an author from a Discord embed author object.
     ///
     /// # Errors
@@ -270,6 +321,16 @@ impl EmbedField {
     pub fn with_inline(mut self, inline: bool) -> Self {
         self.inline = inline;
         self
+    }
+
+    /// Encodes the field as a Discord embed field object.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut object = Object::new();
+        object.insert("name", Value::from(self.name.as_str()));
+        object.insert("value", Value::from(self.value.as_str()));
+        object.insert("inline", Value::from(self.inline));
+        Value::from(object)
     }
 
     /// Decodes a field from a Discord embed field object.
@@ -327,6 +388,19 @@ impl EmbedProvider {
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
         self
+    }
+
+    /// Encodes the provider as a Discord embed provider object.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut object = Object::new();
+        if let Some(name) = &self.name {
+            object.insert("name", Value::from(name.as_str()));
+        }
+        if let Some(url) = &self.url {
+            object.insert("url", Value::from(url.as_str()));
+        }
+        Value::from(object)
     }
 
     /// Decodes a provider from a Discord embed provider object.
@@ -597,6 +671,64 @@ impl Embed {
     pub fn with_flags(mut self, flags: EmbedFlags) -> Self {
         self.flags = flags;
         self
+    }
+
+    /// Encodes the embed as a Discord embed object.
+    ///
+    /// Response-only fields such as proxied URLs are included when they are
+    /// set; Discord ignores them when an embed is sent.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let mut object = Object::new();
+        if let Some(title) = &self.title {
+            object.insert("title", Value::from(title.as_str()));
+        }
+        object.insert("type", Value::from(self.kind.as_str()));
+        if let Some(description) = &self.description {
+            object.insert("description", Value::from(description.as_str()));
+        }
+        if let Some(url) = &self.url {
+            object.insert("url", Value::from(url.as_str()));
+        }
+        if let Some(timestamp) = self.timestamp {
+            object.insert("timestamp", Value::from(cast::format_timestamp(timestamp)));
+        }
+        if let Some(colour) = self.colour {
+            object.insert("color", Value::from(colour.value()));
+        }
+        if let Some(footer) = &self.footer {
+            object.insert("footer", footer.to_value());
+        }
+        if let Some(image) = &self.image {
+            object.insert("image", image.to_value());
+        }
+        if let Some(thumbnail) = &self.thumbnail {
+            object.insert("thumbnail", thumbnail.to_value());
+        }
+        if let Some(video) = &self.video {
+            object.insert("video", video.to_value());
+        }
+        if let Some(provider) = &self.provider {
+            object.insert("provider", provider.to_value());
+        }
+        if let Some(author) = &self.author {
+            object.insert("author", author.to_value());
+        }
+        if !self.fields.is_empty() {
+            object.insert(
+                "fields",
+                Value::from(
+                    self.fields
+                        .iter()
+                        .map(EmbedField::to_value)
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+        if self.flags.bits() != 0 {
+            object.insert("flags", Value::from(self.flags.bits()));
+        }
+        Value::from(object)
     }
 
     /// Returns the total number of characters counted against Discord's
@@ -900,5 +1032,74 @@ mod tests {
             Embed::from_value(&json::from_str(r#"{"footer":{"icon_url":"x"}}"#).unwrap())
                 .unwrap_err();
         assert_eq!(bad_footer.to_string(), "missing field `embed.footer.text`");
+    }
+
+    #[test]
+    fn embeds_encode_to_value() {
+        let embed = Embed::new()
+            .with_title("Title")
+            .with_description("Description")
+            .with_url("https://example.com")
+            .with_timestamp(UNIX_EPOCH + Duration::new(1_627_821_296, 0))
+            .with_colour(Colour::from_rgb(0x12, 0x34, 0x56))
+            .with_footer(EmbedFooter::new("Footer").with_icon_url("https://icon"))
+            .with_author(EmbedAuthor::new("Author").with_url("https://author"))
+            .with_image(EmbedImage::new("https://image"))
+            .with_thumbnail(EmbedThumbnail::new("https://thumb"))
+            .add_field(EmbedField::new("Name", "Value").with_inline(false))
+            .with_flags(EmbedFlags::CONTAINS_EXPLICIT_MEDIA);
+
+        let value = embed.to_value();
+        let object = value.as_object().expect("embed object");
+        assert_eq!(
+            object.get("title").and_then(|value| value.as_str()),
+            Some("Title")
+        );
+        assert_eq!(
+            object.get("type").and_then(|value| value.as_str()),
+            Some("rich")
+        );
+        assert_eq!(
+            object.get("timestamp").and_then(|value| value.as_str()),
+            Some("2021-08-01T12:34:56.000Z")
+        );
+        assert_eq!(
+            object.get("color").and_then(|value| value.as_u64()),
+            Some(0x12_34_56)
+        );
+        assert_eq!(
+            object
+                .get("footer")
+                .and_then(|value| value.as_object())
+                .and_then(|footer| footer.get("text"))
+                .and_then(|value| value.as_str()),
+            Some("Footer")
+        );
+        assert_eq!(
+            object
+                .get("author")
+                .and_then(|value| value.as_object())
+                .and_then(|author| author.get("name"))
+                .and_then(|value| value.as_str()),
+            Some("Author")
+        );
+        let fields = object
+            .get("fields")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            object.get("flags").and_then(|value| value.as_u64()),
+            Some(EmbedFlags::CONTAINS_EXPLICIT_MEDIA.bits())
+        );
+
+        let minimal = Embed::new().to_value();
+        let object = minimal.as_object().unwrap();
+        assert_eq!(
+            object.get("type").and_then(|value| value.as_str()),
+            Some("rich")
+        );
+        assert!(object.get("title").is_none());
+        assert!(object.get("fields").is_none());
     }
 }

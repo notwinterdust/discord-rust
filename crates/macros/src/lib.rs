@@ -118,10 +118,7 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let var_name = format_ident!("arg_{}", param_index);
             arg_extractors.push(quote! {
-                let #var_name = match ctx.arg::<#ty>(#param_index) {
-                    Ok(val) => val,
-                    Err(_) => return,
-                };
+                let #var_name = ctx.arg::<#ty>(#param_index)?;
             });
             call_args.push(quote! { #var_name });
             param_index += 1;
@@ -134,6 +131,27 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { #fn_ident(); }
     };
 
+    let returns_result = match &item_fn.sig.output {
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            syn::Type::Path(path) => path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Result"),
+            _ => false,
+        },
+        syn::ReturnType::Default => false,
+    };
+
+    let invoke = if returns_result {
+        quote! {
+            #fn_ident(#(#call_args),*)
+                .map_err(|error| commands::CommandError::new(error.to_string()))?;
+        }
+    } else {
+        call_expr
+    };
+
     let expanded = quote! {
         #item_fn
 
@@ -143,10 +161,13 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
                 name: #cmd_name.to_string(),
                 aliases: vec![#(#cmd_aliases.to_string()),*],
                 description: #description_expr,
-                handler: Box::new(|ctx: &commands::Context| {
+                handler: Box::new(|ctx: &commands::Context| -> Result<(), commands::CommandError> {
                     #(#arg_extractors)*
-                    #call_expr
+                    #invoke
+                    Ok(())
                 }),
+                checks: Vec::new(),
+                error_handler: None,
             }
         }
     };

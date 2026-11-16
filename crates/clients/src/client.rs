@@ -117,78 +117,212 @@ impl TcpTransport {
 impl Transport for TcpTransport {
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
         let mut stream = self.connect()?;
-        let body = request.body.as_deref().unwrap_or_default();
-        let mut request_bytes = format!(
-            "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-            request.method,
-            request.path_and_query(),
-            self.host
-        )
-        .into_bytes();
-        for (name, value) in &request.headers {
-            request_bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
-        }
-        if !body.is_empty() && request.header("content-length").is_none() {
-            request_bytes
-                .extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
-        }
-        request_bytes.extend_from_slice(b"\r\n");
-        request_bytes.extend_from_slice(body);
-        stream
-            .write_all(&request_bytes)
-            .map_err(|error| HttpError::transport(error.to_string()))?;
+        execute_http(&mut stream, request, &self.host)
+    }
+}
 
-        let mut reader = BufReader::new(stream);
-        let mut status_line = String::new();
+/// An HTTPS transport backed by rustls and the bundled web public roots.
+///
+/// This is the transport used by [`crate::Bot::run_auto`]. It is available when
+/// the `tls` feature is enabled.
+#[cfg(feature = "tls")]
+#[derive(Clone, Debug)]
+pub struct HttpsTransport {
+    host: String,
+    port: u16,
+    timeout: Duration,
+}
+
+#[cfg(feature = "tls")]
+impl HttpsTransport {
+    /// Creates a transport for an HTTPS host.
+    #[must_use]
+    pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            timeout: Duration::from_secs(30),
+        }
+    }
+
+    /// Creates a transport preconfigured for Discord's REST API.
+    #[must_use]
+    pub fn discord() -> Self {
+        Self::new("discord.com", 443)
+    }
+
+    /// Sets the connect and read/write timeout.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Returns the configured host.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// Returns the configured port.
+    #[must_use]
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+#[cfg(feature = "tls")]
+impl Transport for HttpsTransport {
+    fn execute(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+        let mut stream = crate::tls::TlsStream::connect(&self.host, self.port, Some(self.timeout))
+            .map_err(HttpError::transport)?;
+        execute_http(&mut stream, request, &self.host)
+    }
+}
+
+/// Sends one HTTP/1.1 request over a byte stream and decodes the response.
+fn execute_http<S: Read + Write>(
+    stream: &mut S,
+    request: &HttpRequest,
+    host: &str,
+) -> Result<HttpResponse, HttpError> {
+    let body = request.body.as_deref().unwrap_or_default();
+    let mut request_bytes = format!(
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        request.method,
+        request.path_and_query(),
+        host
+    )
+    .into_bytes();
+    for (name, value) in &request.headers {
+        request_bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    if !body.is_empty() && request.header("content-length").is_none() {
+        request_bytes.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    }
+    request_bytes.extend_from_slice(b"\r\n");
+    request_bytes.extend_from_slice(body);
+    stream
+        .write_all(&request_bytes)
+        .and_then(|_| stream.flush())
+        .map_err(|error| HttpError::transport(error.to_string()))?;
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .map_err(|error| HttpError::transport(error.to_string()))?;
+    let mut status_parts = status_line.split_whitespace();
+    let _version = status_parts
+        .next()
+        .ok_or_else(|| HttpError::decode("missing HTTP version"))?;
+    let status = status_parts
+        .next()
+        .ok_or_else(|| HttpError::decode("missing HTTP status"))?
+        .parse::<u16>()
+        .map_err(|error| HttpError::decode(error.to_string()))?;
+
+    let mut headers = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
         reader
-            .read_line(&mut status_line)
+            .read_line(&mut line)
             .map_err(|error| HttpError::transport(error.to_string()))?;
-        let mut status_parts = status_line.split_whitespace();
-        let _version = status_parts
-            .next()
-            .ok_or_else(|| HttpError::decode("missing HTTP version"))?;
-        let status = status_parts
-            .next()
-            .ok_or_else(|| HttpError::decode("missing HTTP status"))?
-            .parse::<u16>()
-            .map_err(|error| HttpError::decode(error.to_string()))?;
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| HttpError::decode("malformed HTTP header"))?;
+        headers.push((name.trim().to_owned(), value.trim().to_owned()));
+    }
 
-        let mut headers = Vec::new();
-        let mut line = String::new();
-        loop {
-            line.clear();
-            reader
-                .read_line(&mut line)
-                .map_err(|error| HttpError::transport(error.to_string()))?;
-            if line == "\r\n" || line == "\n" {
-                break;
+    let chunked = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value.to_ascii_lowercase().contains("chunked")
+    });
+
+    let mut response_body = Vec::new();
+    if chunked {
+        read_chunked(&mut reader, &mut response_body)?;
+    } else if let Some(length) = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse::<usize>().ok())
+    {
+        let mut limited = reader.take(length as u64);
+        limited
+            .read_to_end(&mut response_body)
+            .map_err(|error| HttpError::transport(error.to_string()))?;
+        if response_body.len() != length {
+            return Err(HttpError::decode("HTTP body shorter than Content-Length"));
+        }
+    } else {
+        reader
+            .read_to_end(&mut response_body)
+            .map_err(|error| HttpError::transport(error.to_string()))?;
+    }
+
+    Ok(HttpResponse::new(status, headers, response_body))
+}
+
+/// Decodes an HTTP/1.1 chunked response body.
+fn read_chunked<R: BufRead>(reader: &mut R, body: &mut Vec<u8>) -> Result<(), HttpError> {
+    loop {
+        let mut size_line = String::new();
+        reader
+            .read_line(&mut size_line)
+            .map_err(|error| HttpError::transport(error.to_string()))?;
+        let size = size_line
+            .trim()
+            .split(';')
+            .next()
+            .ok_or_else(|| HttpError::decode("malformed chunk size"))?;
+        let size = usize::from_str_radix(size, 16)
+            .map_err(|_| HttpError::decode("malformed chunk size"))?;
+        if size == 0 {
+            // Consume any trailers up to the terminating blank line.
+            loop {
+                let mut trailer = String::new();
+                reader
+                    .read_line(&mut trailer)
+                    .map_err(|error| HttpError::transport(error.to_string()))?;
+                if trailer == "\r\n" || trailer == "\n" || trailer.is_empty() {
+                    break;
+                }
             }
-            let (name, value) = line
-                .split_once(':')
-                .ok_or_else(|| HttpError::decode("malformed HTTP header"))?;
-            headers.push((name.trim().to_owned(), value.trim().to_owned()));
+            return Ok(());
         }
 
-        let mut response_body = Vec::new();
-        if let Some(length) = headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-            .and_then(|(_, value)| value.parse::<usize>().ok())
-        {
-            let mut limited = reader.take(length as u64);
-            limited
-                .read_to_end(&mut response_body)
-                .map_err(|error| HttpError::transport(error.to_string()))?;
-            if response_body.len() != length {
-                return Err(HttpError::decode("HTTP body shorter than Content-Length"));
-            }
-        } else {
-            reader
-                .read_to_end(&mut response_body)
-                .map_err(|error| HttpError::transport(error.to_string()))?;
-        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader
+            .read_exact(&mut body[start..])
+            .map_err(|error| HttpError::transport(error.to_string()))?;
 
-        Ok(HttpResponse::new(status, headers, response_body))
+        let mut crlf = [0_u8; 2];
+        reader
+            .read_exact(&mut crlf)
+            .map_err(|error| HttpError::transport(error.to_string()))?;
+    }
+}
+
+/// Removes surrounding whitespace and an optional case-insensitive `Bot `
+/// prefix from a token.
+fn normalize_bot_token(token: &str) -> String {
+    let token = token.trim();
+    let Some(prefix) = token.get(..3) else {
+        return token.to_owned();
+    };
+    if !prefix.eq_ignore_ascii_case("bot") {
+        return token.to_owned();
+    }
+    let rest = token.get(3..).unwrap_or_default();
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        rest.trim_start().to_owned()
+    } else {
+        token.to_owned()
     }
 }
 
@@ -323,10 +457,12 @@ impl<T> Client<T> {
 
 impl<T> HttpClient<T> {
     /// Creates a client that authenticates with a bot token.
+    ///
+    /// The token may be supplied with or without the `Bot ` prefix.
     #[must_use]
     pub fn new(token: impl Into<String>, transport: T) -> Self {
         Self {
-            token: token.into(),
+            token: normalize_bot_token(&token.into()),
             auth_scheme: String::from("Bot"),
             transport,
         }
@@ -660,6 +796,20 @@ mod tests {
                 .header("authorization"),
             Some("Bearer secret")
         );
+    }
+
+    #[test]
+    fn tokens_accept_an_optional_bot_prefix() {
+        for token in ["secret", "Bot secret", "bot   secret", "  secret  "] {
+            let client = HttpClient::new(token, MockTransport::default());
+            assert_eq!(client.token(), "secret");
+            assert_eq!(
+                client
+                    .prepare(client.get("users/@me"))
+                    .header("authorization"),
+                Some("Bot secret")
+            );
+        }
     }
 
     #[test]

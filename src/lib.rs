@@ -42,13 +42,30 @@ pub use webhook;
 
 // Re-export key high-level types at the crate root for ergonomics
 pub use app::ui::Paginator;
-pub use clients::bot::{Bot, BotBuilder, EventWaiter, Hooks};
-pub use clients::cache::{ClientCache, MessageEditTracker};
+pub use clients::api::ApiError;
+pub use clients::bot::{
+    Bot, BotApi, BotBuildError, BotBuilder, BotHandle, EventWaiter, Hooks, IntoHandlerResult,
+};
+pub use clients::cache::{ClientCache, MessageEditTracker, SharedCache};
 pub use clients::client::HttpClient;
-pub use clients::connection::GatewayConnection;
+#[cfg(feature = "tls")]
+pub use clients::client::HttpsTransport;
+pub use clients::connection::{
+    GatewayConnection, GatewayTransport, WebSocketFrame, WebSocketTransport,
+};
 pub use clients::events::{PooledEventDispatcher, ThreadedEventDispatcher};
 pub use clients::shard::{ConcurrentShardRuntime, ShardManager};
+#[cfg(feature = "tls")]
+pub use clients::websocket::TlsConnector;
+pub use clients::websocket::{
+    TcpConnector, WebSocketClient, WebSocketConnector, WebSocketGateway, WebSocketIo,
+    WebSocketStream,
+};
 pub use commands::command;
+pub use commands::{
+    CommandDefinition, CommandError, CommandErrorKind, CommandGroup, CommandRegistry, Context,
+    ContextCache, InteractionResponder, Responder, SlashCommand, SlashCommandRegistry,
+};
 pub use enums::Intents;
 pub use models::Event;
 pub use util::ThreadPool;

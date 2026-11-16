@@ -757,6 +757,44 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// Formats a timestamp as an ISO 8601 / RFC 3339 UTC string.
+pub(crate) fn format_timestamp(time: SystemTime) -> String {
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+    let seconds = duration.as_secs();
+    let days = (seconds / 86_400) as i64;
+    let remainder = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = remainder / 3_600;
+    let minute = (remainder % 3_600) / 60;
+    let second = remainder % 60;
+    let millis = duration.subsec_millis();
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
+    let year = if month <= 2 { year + 1 } else { year };
+    (year, month as u32, day as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
@@ -765,9 +803,22 @@ mod tests {
     use data::{Object, Value, json};
 
     use super::{
-        CastError, base64, field_path, index_path, optional_permission_bits, permission_bits,
-        snowflake, timestamp,
+        CastError, base64, field_path, format_timestamp, index_path, optional_permission_bits,
+        permission_bits, snowflake, timestamp,
     };
+
+    #[test]
+    fn timestamps_are_formatted_as_rfc3339() {
+        assert_eq!(
+            format_timestamp(UNIX_EPOCH + Duration::new(1_627_821_296, 789_000_000)),
+            "2021-08-01T12:34:56.789Z"
+        );
+        assert_eq!(format_timestamp(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
+        assert_eq!(
+            format_timestamp(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            "2023-11-14T22:13:20.000Z"
+        );
+    }
 
     #[test]
     fn timestamps_accept_offsets_and_fractions() {

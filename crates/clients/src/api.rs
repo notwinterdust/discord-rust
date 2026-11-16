@@ -5,10 +5,83 @@
 //! [`HttpResponse`]; callers may decode the body with [`models`] or handle it
 //! themselves.
 
+use std::error::Error;
+use std::fmt;
+
 use except::HttpError;
+use models::{AllowedMentions, CastError, Embed};
 
 use crate::{HttpClient, HttpResponse, Transport};
-use data::Value;
+use data::{Object, Value};
+
+/// A typed error returned by the convenience REST methods.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiError {
+    /// The request failed at the HTTP or transport layer.
+    Http(HttpError),
+    /// The response body was not valid JSON.
+    Json(String),
+    /// The JSON response did not match the requested model.
+    Model(CastError),
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(error) => write!(f, "{error}"),
+            Self::Json(message) => write!(f, "could not decode JSON: {message}"),
+            Self::Model(error) => write!(f, "could not decode model: {error}"),
+        }
+    }
+}
+
+impl Error for ApiError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Http(error) => Some(error),
+            Self::Model(error) => Some(error),
+            Self::Json(_) => None,
+        }
+    }
+}
+
+impl From<HttpError> for ApiError {
+    fn from(error: HttpError) -> Self {
+        Self::Http(error)
+    }
+}
+
+impl From<CastError> for ApiError {
+    fn from(error: CastError) -> Self {
+        Self::Model(error)
+    }
+}
+
+/// Checks a response and decodes its JSON body into a model.
+fn decode<T>(
+    response: HttpResponse,
+    parse: impl FnOnce(&Value) -> Result<T, CastError>,
+) -> Result<T, ApiError> {
+    if !response.is_success() {
+        return Err(ApiError::Http(response_error(&response)));
+    }
+    let value = response.json()?;
+    parse(&value).map_err(ApiError::Model)
+}
+
+/// Converts an unsuccessful response into a structured [`HttpError`].
+fn response_error(response: &HttpResponse) -> HttpError {
+    let error = response.json().ok().and_then(|value| {
+        let object = value.as_object()?;
+        let code = match object.get("code") {
+            Some(Value::Number(number)) => number.as_i64()?,
+            _ => return None,
+        };
+        let message = object.get("message").and_then(Value::as_str)?;
+        Some(except::DiscordError::new(code, message))
+    });
+    HttpError::status(response.status, error)
+}
 
 /// REST operations for core Discord resources.
 #[derive(Clone, Debug)]
@@ -51,6 +124,24 @@ impl<T: Transport> DiscordApi<T> {
         self.client.execute_get(format!("users/{user_id}"))
     }
 
+    /// Fetches the current bot user as a typed [`models::User`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn current_user_typed(&self) -> Result<models::User, ApiError> {
+        decode(self.user("@me")?, models::User::from_value)
+    }
+
+    /// Fetches a user as a typed [`models::User`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn user_typed(&self, user_id: &str) -> Result<models::User, ApiError> {
+        decode(self.user(user_id)?, models::User::from_value)
+    }
+
     /// Fetches the current bot user's guild list.
     pub fn current_user_guilds(&self) -> Result<HttpResponse, HttpError> {
         self.client.execute_get("users/@me/guilds")
@@ -82,6 +173,15 @@ impl<T: Transport> DiscordApi<T> {
         self.client.execute_get(format!("guilds/{guild_id}"))
     }
 
+    /// Fetches a guild as a typed [`models::Guild`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn guild_typed(&self, guild_id: u64) -> Result<models::Guild, ApiError> {
+        decode(self.guild(guild_id)?, models::Guild::from_value)
+    }
+
     /// Fetches guild preview (works without being a member).
     pub fn guild_preview(&self, guild_id: u64) -> Result<HttpResponse, HttpError> {
         self.client
@@ -111,6 +211,24 @@ impl<T: Transport> DiscordApi<T> {
     /// Fetches a channel.
     pub fn channel(&self, channel_id: u64) -> Result<HttpResponse, HttpError> {
         self.client.execute_get(format!("channels/{channel_id}"))
+    }
+
+    /// Fetches a channel as a typed [`models::GuildChannel`].
+    ///
+    /// `guild_id` should be supplied for guild channels; pass zero for
+    /// direct-message channels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn channel_typed(
+        &self,
+        channel_id: u64,
+        guild_id: u64,
+    ) -> Result<models::GuildChannel, ApiError> {
+        decode(self.channel(channel_id)?, |value| {
+            models::GuildChannel::from_value(value, guild_id)
+        })
     }
 
     /// Modifies a channel or thread.
@@ -251,6 +369,22 @@ impl<T: Transport> DiscordApi<T> {
             .execute_get(format!("channels/{channel_id}/messages/{message_id}"))
     }
 
+    /// Fetches a message as a typed [`models::Message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn message_typed(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+    ) -> Result<models::Message, ApiError> {
+        decode(
+            self.message(channel_id, message_id)?,
+            models::Message::from_value,
+        )
+    }
+
     /// Creates a message using an already encoded JSON body.
     pub fn create_message(
         &self,
@@ -262,6 +396,159 @@ impl<T: Transport> DiscordApi<T> {
                 .post(format!("channels/{channel_id}/messages"))
                 .with_body(body),
         )
+    }
+
+    /// Sends a plain-text message to a channel.
+    pub fn send_message(&self, channel_id: u64, content: &str) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a plain-text message and decodes the created [`models::Message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn send_message_typed(
+        &self,
+        channel_id: u64,
+        content: &str,
+    ) -> Result<models::Message, ApiError> {
+        decode(
+            self.send_message(channel_id, content)?,
+            models::Message::from_value,
+        )
+    }
+
+    /// Sends a plain-text reply to an existing message.
+    pub fn send_reply(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+        content: &str,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut reference = Object::new();
+        reference.insert("message_id", Value::from(message_id.to_string()));
+        reference.insert("fail_if_not_exists", Value::from(false));
+
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("message_reference", Value::from(reference));
+
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends an embed to a channel.
+    pub fn send_embed(&self, channel_id: u64, embed: &Value) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("embeds", Value::from(vec![embed.clone()]));
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a plain-text message with explicit allowed-mention rules.
+    pub fn send_message_with_mentions(
+        &self,
+        channel_id: u64,
+        content: &str,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("allowed_mentions", mentions.to_value());
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a reply with explicit allowed-mention rules.
+    pub fn send_reply_with_mentions(
+        &self,
+        channel_id: u64,
+        message_id: u64,
+        content: &str,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut reference = Object::new();
+        reference.insert("message_id", Value::from(message_id.to_string()));
+        reference.insert("fail_if_not_exists", Value::from(false));
+
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("message_reference", Value::from(reference));
+        body.insert("allowed_mentions", mentions.to_value());
+
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends an already encoded embed with explicit allowed-mention rules.
+    pub fn send_embed_with_mentions(
+        &self,
+        channel_id: u64,
+        embed: &Value,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("embeds", Value::from(vec![embed.clone()]));
+        body.insert("allowed_mentions", mentions.to_value());
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/messages")),
+            &Value::from(body),
+        )
+    }
+
+    /// Sends a typed embed to a channel.
+    pub fn send_embed_model(
+        &self,
+        channel_id: u64,
+        embed: &Embed,
+    ) -> Result<HttpResponse, HttpError> {
+        self.send_embed(channel_id, &embed.to_value())
+    }
+
+    /// Sends a typed embed and decodes the created [`models::Message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when the request fails or the response is malformed.
+    pub fn send_embed_typed(
+        &self,
+        channel_id: u64,
+        embed: &Embed,
+    ) -> Result<models::Message, ApiError> {
+        decode(
+            self.send_embed_model(channel_id, embed)?,
+            models::Message::from_value,
+        )
+    }
+
+    /// Sends a typed embed with explicit allowed-mention rules.
+    pub fn send_embed_model_with_mentions(
+        &self,
+        channel_id: u64,
+        embed: &Embed,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        self.send_embed_with_mentions(channel_id, &embed.to_value(), mentions)
+    }
+
+    /// Shows the typing indicator in a channel.
+    pub fn trigger_typing(&self, channel_id: u64) -> Result<HttpResponse, HttpError> {
+        self.client
+            .execute_post(format!("channels/{channel_id}/typing"))
     }
 
     /// Edits a message.
@@ -832,6 +1119,86 @@ impl<T: Transport> DiscordApi<T> {
         )
     }
 
+    /// Creates a webhook with the given default name.
+    pub fn create_webhook_named(
+        &self,
+        channel_id: u64,
+        name: &str,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("name", Value::from(name));
+        self.client.execute_json(
+            self.client.post(format!("channels/{channel_id}/webhooks")),
+            &Value::from(body),
+        )
+    }
+
+    /// Executes a webhook with plain-text content.
+    pub fn execute_webhook_content(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        content: &str,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        self.execute_webhook(webhook_id, token, &Value::from(body))
+    }
+
+    /// Executes a webhook with plain-text content and allowed-mention rules.
+    pub fn execute_webhook_content_with_mentions(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        content: &str,
+        mentions: &AllowedMentions,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("content", Value::from(content));
+        body.insert("allowed_mentions", mentions.to_value());
+        self.execute_webhook(webhook_id, token, &Value::from(body))
+    }
+
+    /// Executes a webhook with a typed embed.
+    pub fn execute_webhook_model(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        embed: &Embed,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut body = Object::new();
+        body.insert("embeds", Value::from(vec![embed.to_value()]));
+        self.execute_webhook(webhook_id, token, &Value::from(body))
+    }
+
+    /// Edits a message previously sent by a webhook.
+    pub fn edit_webhook_message(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        message_id: u64,
+        body: &Value,
+    ) -> Result<HttpResponse, HttpError> {
+        self.client.execute_json(
+            self.client.patch(format!(
+                "webhooks/{webhook_id}/{token}/messages/{message_id}"
+            )),
+            body,
+        )
+    }
+
+    /// Deletes a message previously sent by a webhook.
+    pub fn delete_webhook_message(
+        &self,
+        webhook_id: u64,
+        token: &str,
+        message_id: u64,
+    ) -> Result<HttpResponse, HttpError> {
+        self.client.execute_delete(format!(
+            "webhooks/{webhook_id}/{token}/messages/{message_id}"
+        ))
+    }
+
     // =========================================================================
     // Application Commands
     // =========================================================================
@@ -1201,5 +1568,116 @@ mod tests {
         assert_eq!(reqs[9].method, HttpMethod::Delete);
         assert_eq!(reqs[22].path, "channels/456/polls/789/expire");
         assert_eq!(reqs[22].method, HttpMethod::Post);
+    }
+
+    #[test]
+    fn api_builds_command_response_requests() {
+        let (api, transport) = make_api();
+
+        api.send_message(456, "hello").unwrap();
+        api.send_reply(456, 789, "hi").unwrap();
+        api.send_embed(456, &data::Value::object()).unwrap();
+        api.trigger_typing(456).unwrap();
+
+        let reqs = transport.requests.borrow();
+        assert_eq!(reqs.len(), 4);
+        assert_eq!(reqs[0].path, "channels/456/messages");
+        assert_eq!(reqs[0].method, HttpMethod::Post);
+        assert_eq!(reqs[1].path, "channels/456/messages");
+        assert_eq!(reqs[1].method, HttpMethod::Post);
+        assert_eq!(reqs[2].path, "channels/456/messages");
+        assert_eq!(reqs[2].method, HttpMethod::Post);
+        assert_eq!(reqs[3].path, "channels/456/typing");
+        assert_eq!(reqs[3].method, HttpMethod::Post);
+
+        let body =
+            |index: usize| String::from_utf8(reqs[index].body.clone().expect("json body")).unwrap();
+        assert!(body(0).contains("\"content\":\"hello\""));
+        assert!(body(1).contains("message_reference"));
+        assert!(body(2).contains("embeds"));
+    }
+
+    #[test]
+    fn allowed_mentions_and_embed_models_encode_payloads() {
+        let (api, transport) = make_api();
+        let mentions = AllowedMentions::none()
+            .add_user(10_u64)
+            .with_replied_user(true);
+        let embed = Embed::new().with_title("Title");
+
+        api.send_message_with_mentions(1, "hello", &mentions)
+            .unwrap();
+        api.send_reply_with_mentions(1, 2, "reply", &mentions)
+            .unwrap();
+        api.send_embed_with_mentions(1, &Value::object(), &mentions)
+            .unwrap();
+        api.send_embed_model(1, &embed).unwrap();
+        api.send_embed_model_with_mentions(1, &embed, &mentions)
+            .unwrap();
+
+        let reqs = transport.requests.borrow();
+        assert_eq!(reqs.len(), 5);
+        assert!(
+            reqs.iter()
+                .all(|request| request.method == HttpMethod::Post)
+        );
+        assert!(
+            reqs.iter()
+                .all(|request| request.path == "channels/1/messages")
+        );
+
+        let body =
+            |index: usize| String::from_utf8(reqs[index].body.clone().expect("json body")).unwrap();
+        assert!(body(0).contains("\"content\":\"hello\""));
+        assert!(body(0).contains("\"allowed_mentions\""));
+        assert!(body(0).contains("\"users\":[\"10\"]"));
+        assert!(body(0).contains("\"replied_user\":true"));
+        assert!(body(1).contains("message_reference"));
+        assert!(body(1).contains("\"allowed_mentions\""));
+        assert!(body(2).contains("\"embeds\""));
+        assert!(body(2).contains("\"allowed_mentions\""));
+        assert!(body(3).contains("\"title\":\"Title\""));
+        assert!(!body(3).contains("allowed_mentions"));
+        assert!(body(4).contains("\"title\":\"Title\""));
+        assert!(body(4).contains("\"allowed_mentions\""));
+    }
+
+    #[test]
+    fn webhook_helpers_use_expected_routes() {
+        let (api, transport) = make_api();
+        let embed = Embed::new().with_title("Hook");
+
+        api.create_webhook_named(1, "hooks").unwrap();
+        api.execute_webhook_content(2, "token", "hello").unwrap();
+        api.execute_webhook_content_with_mentions(2, "token", "hello", &AllowedMentions::none())
+            .unwrap();
+        api.execute_webhook_model(2, "token", &embed).unwrap();
+        api.edit_webhook_message(2, "token", 3, &Value::object())
+            .unwrap();
+        api.delete_webhook_message(2, "token", 3).unwrap();
+
+        let reqs = transport.requests.borrow();
+        assert_eq!(reqs.len(), 6);
+        assert_eq!(reqs[0].path, "channels/1/webhooks");
+        assert_eq!(reqs[0].method, HttpMethod::Post);
+        assert_eq!(reqs[1].path, "webhooks/2/token");
+        assert_eq!(reqs[1].method, HttpMethod::Post);
+        assert_eq!(reqs[2].path, "webhooks/2/token");
+        assert_eq!(reqs[3].path, "webhooks/2/token");
+        assert!(
+            reqs[3].body.as_ref().is_some_and(|body| {
+                String::from_utf8_lossy(body).contains("\"title\":\"Hook\"")
+            })
+        );
+        assert_eq!(reqs[4].path, "webhooks/2/token/messages/3");
+        assert_eq!(reqs[4].method, HttpMethod::Patch);
+        assert_eq!(reqs[5].path, "webhooks/2/token/messages/3");
+        assert_eq!(reqs[5].method, HttpMethod::Delete);
+
+        let body =
+            |index: usize| String::from_utf8(reqs[index].body.clone().expect("json body")).unwrap();
+        assert!(body(0).contains("\"name\":\"hooks\""));
+        assert!(body(1).contains("\"content\":\"hello\""));
+        assert!(body(2).contains("\"allowed_mentions\""));
     }
 }
