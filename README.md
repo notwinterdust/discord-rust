@@ -1,8 +1,10 @@
+<p align="center"><img src="Vector.svg" alt="discord-rust" width="120"></p>
+
 # discord-rust
 
-[![Documentation](https://img.shields.io/badge/docs-discord--rust.netlify.app-5865F2.svg)](https://discord-rust.netlify.app/)
+[![Documentation](https://img.shields.io/badge/docs-discord--rust.netlify.app-CE412B.svg)](https://discord-rust.netlify.app/)
 [![Crates.io](https://img.shields.io/crates/v/discord-rust.svg)](https://crates.io/crates/discord-rust)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-CE412B.svg)](LICENSE)
 
 A synchronous, modular Discord API and gateway library for Rust. The runtime
 crates use only the standard library; TLS is an optional layer enabled by the
