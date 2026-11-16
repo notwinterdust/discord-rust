@@ -15,17 +15,19 @@ use discord_rust::{BotBuilder, CommandRegistry, Context, Event, Intents, SlashCo
 
 fn main() -> Result<(), Box<dyn Error>> {
     let token = std::env::var("DISCORD_TOKEN")?;
-
+    // register prefix
     let mut prefix = CommandRegistry::new("!");
+    // add ping command
     prefix.add_command("ping", |context: &Context| context.respond("Pong!"))?;
-
+    // register slash command
     let mut slash = SlashCommandRegistry::new();
+    // add slash command
     slash.add(
         "ping",
         "Check that the bot is online",
         |context: &Context| context.respond("Pong!"),
     )?;
-
+    // create the bot
     let bot = BotBuilder::new()
         .token(token)
         .intents_flags(Intents::default() | Intents::MESSAGE_CONTENT)
@@ -44,6 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     println!("Starting bot; press Ctrl+C to stop.");
+    // run_auto to use the default TLS transports
     bot.run_auto()?;
     Ok(())
 }
