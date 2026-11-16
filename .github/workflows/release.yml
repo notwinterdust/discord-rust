@@ -86,19 +86,21 @@ jobs:
           CRATES=(
             discord-rust-abc
             discord-rust-enums
+            discord-rust-data
+            discord-rust-app
+            discord-rust-macros
+            discord-rust-models
+            discord-rust-commands
             discord-rust-except
-            discord-rust-log
             discord-rust-util
             discord-rust-version
+            discord-rust-clients
+            discord-rust-event
+            discord-rust-log
             discord-rust-voice
             discord-rust-macros
             discord-rust-commands
             discord-rust-webhook
-            discord-rust-data
-            discord-rust-app
-            discord-rust-models
-            discord-rust-event
-            discord-rust-clients
             discord-rust
           )
 
