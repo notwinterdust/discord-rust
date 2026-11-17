@@ -104,7 +104,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    bot.run_auto()?;
+    if let Err(error) = bot.run_auto() {
+        eprintln!("Bot stopped: {error}");
+        std::process::exit(1);
+    }
     Ok(())
 }
 ```
