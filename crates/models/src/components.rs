@@ -1253,12 +1253,12 @@ mod tests {
         assert_eq!(bad_button.to_string(), "missing field `component.style`");
 
         let bad_select = ActionRowChild::from_value(
-            &json::from_str(r#"{"type":3,"custom_id":"choose","channel_types":[99]}"#).unwrap(),
+            &json::from_str(r#"{"type":3,"custom_id":"choose","channel_types":["text"]}"#).unwrap(),
         )
         .unwrap_err();
         assert_eq!(
             bad_select.to_string(),
-            "field `component.channel_types[0]` must be a channel type"
+            "field `component.channel_types[0]` must be a non-negative integer"
         );
 
         let bad_default = SelectDefaultValue::from_value(

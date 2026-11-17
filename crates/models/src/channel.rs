@@ -1910,10 +1910,14 @@ mod tests {
         assert_eq!(error.to_string(), "missing field `channel.type`");
 
         let unknown_type = json::from_str(r#"{"id":"10","name":"general","type":99}"#).unwrap();
-        let error = GuildChannel::from_value(&unknown_type, 1_u64).unwrap_err();
+        let channel = GuildChannel::from_value(&unknown_type, 1_u64).unwrap();
+        assert_eq!(channel.channel_type, ChannelType::Unknown(99));
+
+        let bad_type = json::from_str(r#"{"id":"10","name":"general","type":"text"}"#).unwrap();
+        let error = GuildChannel::from_value(&bad_type, 1_u64).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "field `channel.type` must be a channel type"
+            "field `channel.type` must be a non-negative integer"
         );
 
         let bad_overwrite = json::from_str(

@@ -3,8 +3,8 @@
 use std::fmt;
 
 /// The kind of channel a [`ChannelType`] describes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ChannelType {
     /// A guild text channel.
     #[default]
@@ -27,20 +27,42 @@ pub enum ChannelType {
     PrivateThread = 12,
     /// A guild stage voice channel.
     StageVoice = 13,
+    /// The channel in a hub containing the listed servers.
+    Directory = 14,
     /// A guild forum channel.
     Forum = 15,
     /// A guild media channel.
     Media = 16,
+    /// A channel type this crate does not recognise yet.
+    ///
+    /// The raw value is preserved so channels added by Discord in the future
+    /// do not make an entire event fail to decode.
+    Unknown(u8),
 }
 
 impl ChannelType {
     /// Returns the raw API value.
     #[must_use]
     pub const fn value(self) -> u8 {
-        self as u8
+        match self {
+            Self::Text => 0,
+            Self::Private => 1,
+            Self::Voice => 2,
+            Self::Group => 3,
+            Self::Category => 4,
+            Self::News => 5,
+            Self::NewsThread => 10,
+            Self::PublicThread => 11,
+            Self::PrivateThread => 12,
+            Self::StageVoice => 13,
+            Self::Directory => 14,
+            Self::Forum => 15,
+            Self::Media => 16,
+            Self::Unknown(value) => value,
+        }
     }
 
-    /// Converts a raw API value, returning `None` for unknown values.
+    /// Converts a raw API value, preserving values this crate does not know.
     #[must_use]
     pub const fn from_value(value: u8) -> Option<Self> {
         match value {
@@ -54,9 +76,10 @@ impl ChannelType {
             11 => Some(Self::PublicThread),
             12 => Some(Self::PrivateThread),
             13 => Some(Self::StageVoice),
+            14 => Some(Self::Directory),
             15 => Some(Self::Forum),
             16 => Some(Self::Media),
-            _ => None,
+            other => Some(Self::Unknown(other)),
         }
     }
 
@@ -74,8 +97,10 @@ impl ChannelType {
             Self::PublicThread => "public_thread",
             Self::PrivateThread => "private_thread",
             Self::StageVoice => "stage_voice",
+            Self::Directory => "directory",
             Self::Forum => "forum",
             Self::Media => "media",
+            Self::Unknown(_) => "unknown",
         }
     }
 
@@ -508,15 +533,16 @@ mod tests {
 
     #[test]
     fn channel_type_round_trips() {
-        let values = [0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 15, 16];
+        let values = [0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15, 16];
 
         for value in values {
             let channel_type = ChannelType::from_value(value).unwrap();
             assert_eq!(channel_type.value(), value);
         }
 
-        assert_eq!(ChannelType::from_value(6), None);
-        assert_eq!(ChannelType::from_value(14), None);
+        assert_eq!(ChannelType::from_value(20), Some(ChannelType::Unknown(20)));
+        assert_eq!(ChannelType::Unknown(20).value(), 20);
+        assert_eq!(ChannelType::Unknown(20).as_str(), "unknown");
         assert_eq!(ChannelType::default(), ChannelType::Text);
     }
 
