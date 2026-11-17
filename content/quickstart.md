@@ -121,10 +121,24 @@ Type `!ping` or use `/ping` in a channel where the bot can send messages. Both
 handlers call `Context::respond`, which routes to the interaction callback for
 slash commands and to the REST responder for prefix commands.
 
+### Build a standalone binary
+
+Use `cargo build --release` when you want to deploy the bot instead of running
+it through Cargo:
+
+```bash
+cargo build --release
+./target/release/<your-crate-name>
+```
+
+The executable reads `DISCORD_TOKEN` from the environment of the process that
+starts it. Export the variable, or load the `.env` file in the shell first; a
+`.env` file is not read automatically at runtime.
+
 ### Troubleshooting
 
 - `Error: NotPresent` means `DISCORD_TOKEN` is not visible to the process.
-  Export it in the same shell that runs `cargo run`.
+  Export it in the same shell that runs the bot.
 - `Bot stopped: gateway closed: 4004 (authentication failed)` means the token is
   invalid or was reset. Copy the current token from **Bot → Reset Token** in the
   Developer Portal and update your environment.
