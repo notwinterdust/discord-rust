@@ -89,7 +89,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connects to wss:// with the bundled web PKI roots and installs a REST
     // client for command responses.
-    bot.run_auto()?;
+    if let Err(error) = bot.run_auto() {
+        eprintln!("Bot stopped: {error}");
+        std::process::exit(1);
+    }
     Ok(())
 }
 ```
@@ -107,9 +110,30 @@ export DISCORD_TOKEN="your token"
 cargo run
 ```
 
+If you keep the token in a `.env` file instead, load it into the shell first:
+
+```bash
+set -a; . ./.env; set +a
+cargo run
+```
+
 Type `!ping` or use `/ping` in a channel where the bot can send messages. Both
 handlers call `Context::respond`, which routes to the interaction callback for
 slash commands and to the REST responder for prefix commands.
+
+### Troubleshooting
+
+- `Error: NotPresent` means `DISCORD_TOKEN` is not visible to the process.
+  Export it in the same shell that runs `cargo run`.
+- `Bot stopped: gateway closed: 4004 (authentication failed)` means the token is
+  invalid or was reset. Copy the current token from **Bot → Reset Token** in the
+  Developer Portal and update your environment.
+- `Bot stopped: gateway closed: 4014 (disallowed intents)` means a privileged
+  intent is not enabled for the application. Open the Developer Portal, select
+  your application, go to **Bot → Privileged Gateway Intents**, and enable
+  **Message Content Intent**. The quickstart requests
+  `Intents::MESSAGE_CONTENT` so prefix commands such as `!ping` can read the
+  message body.
 
 ---
 
