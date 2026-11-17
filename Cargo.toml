@@ -36,7 +36,7 @@ event = { package = "discord-rust-event", path = "crates/event", version = "0.1.
 except = { package = "discord-rust-except", path = "crates/except", version = "0.1.0" }
 log = { package = "discord-rust-log", path = "crates/log", version = "0.1.0" }
 macros = { package = "discord-rust-macros", path = "crates/macros", version = "0.1.1" }
-models = { package = "discord-rust-models", path = "crates/models", version = "0.1.1" }
+models = { package = "discord-rust-models", path = "crates/models", version = "0.1.2" }
 util = { package = "discord-rust-util", path = "crates/util", version = "0.1.0" }
 version = { package = "discord-rust-version", path = "crates/version", version = "0.1.0" }
 voice = { package = "discord-rust-voice", path = "crates/voice", version = "0.1.0" }
