@@ -1,6 +1,6 @@
 [package]
 name = "discord-rust-clients"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -18,7 +18,7 @@ commands = { package = "discord-rust-commands", path = "../commands", version = 
 data = { package = "discord-rust-data", path = "../data", version = "0.1.0" }
 enums = { package = "discord-rust-enums", path = "../enums", version = "0.1.0" }
 except = { package = "discord-rust-except", path = "../except", version = "0.1.0" }
-models = { package = "discord-rust-models", path = "../models", version = "0.1.1" }
+models = { package = "discord-rust-models", path = "../models", version = "0.1.2" }
 util = { package = "discord-rust-util", path = "../util", version = "0.1.0" }
 version = { package = "discord-rust-version", path = "../version", version = "0.1.0" }
 

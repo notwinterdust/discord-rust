@@ -187,7 +187,9 @@ impl PartialApplication {
         let id = cast::required_snowflake(object, path, "id")?;
         Ok(Self {
             id,
-            name: cast::required_string(object, path, "name")?.to_owned(),
+            name: cast::optional_string(object, path, "name")?
+                .unwrap_or_default()
+                .to_owned(),
             description: cast::optional_string(object, path, "description")?
                 .unwrap_or_default()
                 .to_owned(),
@@ -387,8 +389,8 @@ mod tests {
         assert!(minimal.redirect_uris.is_empty());
 
         let missing_name =
-            PartialApplication::from_value(&json::from_str(r#"{"id":"11"}"#).unwrap()).unwrap_err();
-        assert_eq!(missing_name.to_string(), "missing field `application.name`");
+            PartialApplication::from_value(&json::from_str(r#"{"id":"11"}"#).unwrap()).unwrap();
+        assert!(missing_name.name.is_empty());
 
         let bad_redirects = PartialApplication::from_value(
             &json::from_str(r#"{"id":"11","name":"Bot","redirect_uris":[1]}"#).unwrap(),

@@ -1548,13 +1548,15 @@ mod tests {
         );
 
         let bad_channel = Guild::from_value(
-            &json::from_str(r#"{"id":"100","channels":[{"id":"5","name":"general","type":99}]}"#)
-                .unwrap(),
+            &json::from_str(
+                r#"{"id":"100","channels":[{"id":"5","name":"general","type":"text"}]}"#,
+            )
+            .unwrap(),
         )
         .unwrap_err();
         assert_eq!(
             bad_channel.to_string(),
-            "field `guild.channels[0].type` must be a channel type"
+            "field `guild.channels[0].type` must be a non-negative integer"
         );
 
         let bad_sticker = Guild::from_value(

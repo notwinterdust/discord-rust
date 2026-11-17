@@ -1956,6 +1956,20 @@ mod tests {
             missing_session.to_string(),
             "missing field `ready.session_id`"
         );
+
+        // Discord sends only the ID and flags for the application in READY, so
+        // the name cannot be required.
+        let minimal_application = ReadyEvent::from_value(&value(
+            r#"{
+                "user": {"id": "1", "username": "w"},
+                "session_id": "session",
+                "application": {"id": "4", "flags": 0}
+            }"#,
+        ))
+        .unwrap();
+        let application = minimal_application.application.unwrap();
+        assert_eq!(application.id, Snowflake::new(4));
+        assert_eq!(application.name, "");
     }
 
     #[test]
