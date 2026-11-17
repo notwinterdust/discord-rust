@@ -11,7 +11,7 @@ repository = "https://github.com/notwinterdust/discord-rust"
 
 [package]
 name = "discord-rust"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -28,7 +28,7 @@ tls = ["clients/tls"]
 [dependencies]
 abc = { package = "discord-rust-abc", path = "crates/abc", version = "0.1.0" }
 app = { package = "discord-rust-app", path = "crates/app", version = "0.1.0" }
-clients = { package = "discord-rust-clients", path = "crates/clients", version = "0.1.1", default-features = false }
+clients = { package = "discord-rust-clients", path = "crates/clients", version = "0.1.2", default-features = false }
 commands = { package = "discord-rust-commands", path = "crates/commands", version = "0.1.1" }
 data = { package = "discord-rust-data", path = "crates/data", version = "0.1.0" }
 enums = { package = "discord-rust-enums", path = "crates/enums", version = "0.1.0" }
