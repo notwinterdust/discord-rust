@@ -205,6 +205,9 @@ pub enum GatewayConnectionError {
     Gateway(GatewayError),
     /// A dispatch event's data was malformed.
     Event(CastError),
+    /// The gateway closed with a code that cannot be recovered from, such as
+    /// an invalid token or a disallowed intent.
+    Closed(GatewayCloseCode),
 }
 
 impl fmt::Display for GatewayConnectionError {
@@ -214,6 +217,7 @@ impl fmt::Display for GatewayConnectionError {
             Self::Payload(error) => write!(f, "gateway payload error: {error}"),
             Self::Gateway(error) => write!(f, "gateway error: {error}"),
             Self::Event(error) => write!(f, "gateway event error: {error}"),
+            Self::Closed(code) => write!(f, "gateway closed: {code}"),
         }
     }
 }
@@ -225,6 +229,7 @@ impl Error for GatewayConnectionError {
             Self::Payload(error) => Some(error),
             Self::Gateway(error) => Some(error),
             Self::Event(error) => Some(error),
+            Self::Closed(_) => None,
         }
     }
 }
@@ -543,7 +548,10 @@ impl<T: GatewayTransport> GatewayConnection<T> {
 
         loop {
             if self.closed {
-                return Ok(());
+                return match self.close_code {
+                    Some(code) if !code.is_normal() => Err(GatewayConnectionError::Closed(code)),
+                    _ => Ok(()),
+                };
             }
             if stop() {
                 self.transport.close();
@@ -799,7 +807,7 @@ mod tests {
         transport.frames.push_back(GatewayFrame::Text(message()));
         transport
             .frames
-            .push_back(GatewayFrame::Close(GatewayCloseCode::AUTHENTICATION_FAILED));
+            .push_back(GatewayFrame::Close(GatewayCloseCode::NORMAL));
 
         let mut connection = GatewayConnection::new(config(), transport);
         let received = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -814,16 +822,31 @@ mod tests {
 
         assert_eq!(connection.runtime().state(), GatewayState::Closed);
         assert!(connection.is_closed());
-        assert_eq!(
-            connection.close_code(),
-            Some(GatewayCloseCode::AUTHENTICATION_FAILED)
-        );
+        assert_eq!(connection.close_code(), Some(GatewayCloseCode::NORMAL));
         assert_eq!(*received.borrow(), vec!["hello"]);
 
         let transport = connection.transport();
         assert_eq!(transport.connected.len(), 1);
         assert_eq!(transport.closes, 1);
         assert_eq!(transport.sent[0].op, GatewayOpcode::Identify);
+    }
+
+    #[test]
+    fn run_reports_non_recoverable_close_codes() {
+        let mut transport = MockTransport::default();
+        transport.frames.push_back(GatewayFrame::Text(hello(1_000)));
+        transport
+            .frames
+            .push_back(GatewayFrame::Close(GatewayCloseCode::AUTHENTICATION_FAILED));
+
+        let mut connection = GatewayConnection::new(config(), transport);
+        let error = connection.run().unwrap_err();
+
+        assert_eq!(
+            error,
+            GatewayConnectionError::Closed(GatewayCloseCode::AUTHENTICATION_FAILED)
+        );
+        assert!(connection.is_closed());
     }
 
     #[test]

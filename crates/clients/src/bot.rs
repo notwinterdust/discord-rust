@@ -1457,7 +1457,7 @@ mod tests {
     use data::GatewayCloseCode;
     use data::gateway::{GatewayOpcode, GatewayPayload, Hello};
 
-    use crate::connection::{GatewayFrame, GatewayTransportError};
+    use crate::connection::{GatewayConnectionError, GatewayFrame, GatewayTransportError};
 
     #[derive(Debug, Default)]
     struct ScriptedTransport {
@@ -1551,6 +1551,10 @@ mod tests {
     }
 
     fn close_frame() -> GatewayFrame {
+        GatewayFrame::Close(GatewayCloseCode::NORMAL)
+    }
+
+    fn auth_failure_frame() -> GatewayFrame {
         GatewayFrame::Close(GatewayCloseCode::AUTHENTICATION_FAILED)
     }
 
@@ -1602,6 +1606,22 @@ mod tests {
         let cache = bot.cache();
         let cache = cache.lock().unwrap();
         assert_eq!(cache.messages.get(10).unwrap().content, "hello");
+    }
+
+    #[test]
+    fn bot_run_reports_gateway_close_codes() {
+        let bot = Bot::builder().token("Bot TOKEN").build().unwrap();
+        let transport = ScriptedTransport {
+            frames: VecDeque::from([hello_frame(), auth_failure_frame()]),
+            ..ScriptedTransport::default()
+        };
+
+        let error = bot.run(transport).unwrap_err();
+
+        assert_eq!(
+            error,
+            GatewayConnectionError::Closed(GatewayCloseCode::AUTHENTICATION_FAILED)
+        );
     }
 
     #[test]
