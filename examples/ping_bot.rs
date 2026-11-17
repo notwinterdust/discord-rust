@@ -47,6 +47,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting bot; press Ctrl+C to stop.");
     // run_auto to use the default TLS transports
-    bot.run_auto()?;
+    if let Err(error) = bot.run_auto() {
+        eprintln!("Bot stopped: {error}");
+        std::process::exit(1);
+    }
     Ok(())
 }
