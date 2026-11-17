@@ -43,19 +43,6 @@ discord-rust = "0.1.1"
 
 ---
 
-## Examples
-
-A complete runnable bot lives in [`examples/ping_bot.rs`](examples/ping_bot.rs).
-It answers both `!ping` and `/ping`, logs messages, and uses the default TLS
-transports:
-
-```bash
-export DISCORD_TOKEN="your bot token"
-cargo run --example ping_bot
-```
-
----
-
 ## Quickstart: Bot Builder
 
 For the complete 5-minute interactive tutorial and guide, see the **[Step-by-Step Quickstart on the Docs Site](https://discord-rust.netlify.app/#quickstart)**.
