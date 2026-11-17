@@ -38,7 +38,7 @@ Add `discord-rust` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-discord-rust = "0.1.1"
+discord-rust = "0.1.2"
 ```
 
 ---
