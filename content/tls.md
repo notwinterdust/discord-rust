@@ -6,10 +6,10 @@ on by default. The proc-macro crate uses `syn` and `quote` at compile time.
 
 ```toml
 [dependencies]
-discord-rust = "0.1.1"           # tls is enabled
+discord-rust = "0.1.2"           # tls is enabled
 
 # or:
-discord-rust = { version = "0.1.1", default-features = false }
+discord-rust = { version = "0.1.2", default-features = false }
 ```
 
 Enabling `tls` adds `rustls`, `rustls-pki-types` and `webpki-roots` to

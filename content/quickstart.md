@@ -32,7 +32,7 @@ Add the library:
 
 ```toml
 [dependencies]
-discord-rust = "0.1.1"
+discord-rust = "0.1.2"
 ```
 
 The `tls` feature is enabled by default. To keep the runtime dependency graph

@@ -51,7 +51,7 @@ The same pages are available as raw markdown in [`content/`](content/).
 
 ```toml
 [dependencies]
-discord-rust = "0.1.1"
+discord-rust = "0.1.2"
 ```
 
 The `tls` feature is enabled by default. To keep the runtime dependency graph
@@ -59,7 +59,7 @@ standard-library only and supply your own transports:
 
 ```toml
 [dependencies]
-discord-rust = { version = "0.1.1", default-features = false }
+discord-rust = { version = "0.1.2", default-features = false }
 ```
 
 ---
